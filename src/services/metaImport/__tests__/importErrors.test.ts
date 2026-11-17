@@ -32,6 +32,7 @@ import {
   CHUNK_ALLOWANCE_PAUSE_MS,
   CLIENT_BUG_THRESHOLD,
   DEFAULT_RATE_LIMIT_PAUSE_MS,
+  IMPORT_TERMINAL_CODES,
   NETWORK_STAGE_LADDER_MS,
   classifyImportFailure,
   isImportCancellation,
@@ -347,10 +348,30 @@ describe('409 IMPORT_REFUSED', () => {
     ).toEqual({ kind: 'adopt-session', importId: SESSION_ID });
   });
 
+  it('passes the open session SOURCE through without judging it', () => {
+    expect(
+      classifyImportFailure(
+        refusal('IMPORT_IN_PROGRESS', { import_id: SESSION_ID, source: 'instagram' }),
+        ctx({ stage: 'start' }),
+      ),
+    ).toEqual({ kind: 'adopt-session', importId: SESSION_ID, source: 'instagram' });
+  });
+
   it('adopts without an id on the insert race, so the runner re-reads the preflight', () => {
     expect(classifyImportFailure(refusal('IMPORT_IN_PROGRESS'), ctx({ stage: 'start' }))).toEqual({
       kind: 'adopt-session',
     });
+  });
+
+  it('omits the source key entirely when the server named none', () => {
+    const verdict = classifyImportFailure(
+      refusal('IMPORT_IN_PROGRESS', { import_id: SESSION_ID }),
+      ctx({ stage: 'start' }),
+    );
+    // Absent, not `undefined`-valued: the runner distinguishes "not stated"
+    // from "stated and different" only by presence, and both mean foreign.
+    expect(verdict).toEqual({ kind: 'adopt-session', importId: SESSION_ID });
+    expect('source' in verdict).toBe(false);
   });
 
   it('restarts the session on IMPORT_CLOSED + abandoned', () => {
@@ -723,5 +744,52 @@ describe('silence', () => {
     warn.mockRestore();
     error.mockRestore();
     log.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The terminal registry
+// ---------------------------------------------------------------------------
+
+describe('IMPORT_TERMINAL_CODES', () => {
+  it('carries OTHER_IMPORT_OPEN', () => {
+    // #996: one open session per member per orbit ACROSS sources (B#352), so
+    // "yours is busy with the other platform" needs a code of its own — the
+    // member's next move is that import, not this one.
+    expect(Object.prototype.hasOwnProperty.call(IMPORT_TERMINAL_CODES, 'OTHER_IMPORT_OPEN')).toBe(
+      true,
+    );
+  });
+
+  it('is never reached by the classifier, only by the runner', () => {
+    // The classifier is SOURCE-BLIND by design: the server's refusal is
+    // `IMPORT_IN_PROGRESS` whichever source is open, and only the runner
+    // knows which source it is importing. A classifier arm that returned
+    // this code would be deciding with information it does not have.
+    const everyRefusal = [
+      refusal('IMPORT_IN_PROGRESS', { import_id: SESSION_ID, source: 'instagram' }),
+      refusal('IMPORT_IN_PROGRESS'),
+      refusal('IMPORT_CLOSED', { status: 'closed' }),
+      refusal('IMPORT_ALLOWANCE_EXCEEDED'),
+      refusal('IMPORT_QUOTA_EXCEEDED'),
+      refusal('IMPORT_NOT_OWNED'),
+    ];
+    const stages: ImportStage[] = [
+      'start',
+      'batch',
+      'media-chunk',
+      'media-complete',
+      'complete',
+      'archive',
+      'crypto',
+    ];
+    for (const stage of stages) {
+      for (const error of everyRefusal) {
+        const verdict = classifyImportFailure(error, ctx({ stage }));
+        if (verdict.kind === 'job-terminal') {
+          expect(verdict.code).not.toBe('OTHER_IMPORT_OPEN');
+        }
+      }
+    }
   });
 });

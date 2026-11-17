@@ -44,22 +44,35 @@ import { Header } from '../../components/Header';
 import { SectionHeader } from '../settings/SectionHeader';
 import { ImportParseView } from './ImportParseView';
 import { useImportAvailability } from './useImportAvailability';
-import { importStore, pickAndStartParse } from '../../services/metaImport/importRunner';
-import { cancelImport, resumeImportAtLaunch } from '../../services/metaImport/importRunner';
+import {
+  cancelImport,
+  importStore,
+  pickAndStartParse,
+  resumeImportAtLaunch,
+} from '../../services/metaImport/importRunner';
 import {
   ACCOUNTS_CENTER_LINK_LABEL,
   ACCOUNTS_CENTER_URL,
   CHOOSE_FILES_LABEL,
   HOW_TO_NOTES,
+  HOW_TO_STEPS,
+  HOW_TO_TITLE,
   PICK_FAILURE_COPY,
-  describeAllowance,
+  SOURCE_CHOICE_BODY,
+  SOURCE_CHOICE_CANCEL_LABEL,
+  SOURCE_CHOICE_TITLE,
+  SOURCE_LABEL,
+  describeAllowances,
   describeHowToIntro,
-  describeHowToSteps,
+  describeImportOtherCaption,
   describeIntoCaption,
-  describeStartRow,
 } from './importCopy';
 
 import type { SettingsStackParamList } from '../../navigation/types';
+import type { ImportSource } from '../../services/metaImport/types';
+
+/** The two platforms, in the order the chooser lists them. */
+const SOURCES: readonly ImportSource[] = ['facebook', 'instagram'];
 
 type HowToRoute = RouteProp<SettingsStackParamList, 'ImportHowTo'>;
 type HowToNavigation = NativeStackNavigationProp<SettingsStackParamList, 'ImportHowTo'>;
@@ -68,7 +81,7 @@ export function ImportHowToScreen(): React.JSX.Element {
   const theme = useTheme();
   const navigation = useNavigation<HowToNavigation>();
   const route = useRoute<HowToRoute>();
-  const { source, conversationId } = route.params;
+  const { conversationId, preferredSource } = route.params;
 
   const orbitName = useAppStore((s) => s.conversations[conversationId]?.name ?? null);
   const availability = useImportAvailability(conversationId);
@@ -77,23 +90,109 @@ export function ImportHowToScreen(): React.JSX.Element {
 
   const [error, setError] = useState<string | null>(null);
 
-  // One pick at a time. `pickAndStartParse` already refuses a second job, but
-  // a double tap would answer `cancelled` for the second one and read as a
-  // picker that silently closed.
+  /**
+   * One pick at a time — as STATE, not a ref (#996 §7.3).
+   *
+   * The wait now spans the OS picker, the chooser dialog and the whole parse,
+   * so the button has to show it: a ref would guard the second tap while
+   * leaving the button looking idle for as long as the member takes to answer
+   * "which posts first?".
+   */
+  const [picking, setPicking] = useState(false);
   const pickInFlight = useRef(false);
   const mounted = useRef(true);
+
+  /**
+   * The chooser's settle function while its Alert is up.
+   *
+   * It lives in a ref so UNMOUNT can settle it: the runner is awaiting that
+   * promise, and a screen that goes away with the dialog still presented would
+   * otherwise leave the pick hanging forever. It also makes the settle
+   * single-shot, so a late tap on a dialog that outlived the screen (Android)
+   * is a no-op rather than a second answer.
+   */
+  const pendingChoice = useRef<((source: ImportSource | null) => void) | null>(null);
+
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      const settle = pendingChoice.current;
+      pendingChoice.current = null;
+      settle?.(null);
     };
   }, []);
 
-  const handleOpenAccountsCenter = useCallback(() => {
+  const handleOpenAccountsCenter = useCallback((source: ImportSource) => {
     // Fire and forget: a device with no browser is not worth an alert, and
     // every step is written out above the link.
     Linking.openURL(ACCOUNTS_CENTER_URL[source]).catch(() => {});
-  }, [source]);
+  }, []);
+
+  /**
+   * Posts left in one source's bucket, or null when the allowance is unknown.
+   *
+   * Unknown is NOT zero: it means the probe hasn't answered, and treating it
+   * as exhausted would silently pick the other platform for the member.
+   */
+  const remainingPostsFor = useCallback(
+    (source: ImportSource): number | null => {
+      const allowance = availability.allowances?.[source];
+      if (allowance === undefined) return null;
+      return Math.max(0, allowance.postsLimit - allowance.postsUsed);
+    },
+    [availability.allowances],
+  );
+
+  /**
+   * "Which posts first?" — asked ONLY when the archive holds both sources
+   * (#996 §7.3). The runner calls this during the parse and awaits it.
+   *
+   * Two shortcuts answer without a dialog:
+   *  - `preferredSource`, set by the "import the other one" offers, which is
+   *    the member having already answered this question;
+   *  - exactly one source out of posts, where the dialog would offer a choice
+   *    that cannot be taken.
+   */
+  const chooseSource = useCallback((): Promise<ImportSource | null> => {
+    if (preferredSource !== undefined) return Promise.resolve(preferredSource);
+
+    const facebookLeft = remainingPostsFor('facebook');
+    const instagramLeft = remainingPostsFor('instagram');
+    if (facebookLeft !== null && instagramLeft !== null) {
+      if (facebookLeft === 0 && instagramLeft > 0) return Promise.resolve('instagram');
+      if (instagramLeft === 0 && facebookLeft > 0) return Promise.resolve('facebook');
+    }
+
+    return new Promise<ImportSource | null>((resolve) => {
+      let settled = false;
+      const settle = (source: ImportSource | null): void => {
+        if (settled) return;
+        settled = true;
+        if (pendingChoice.current === settle) pendingChoice.current = null;
+        resolve(source);
+      };
+      pendingChoice.current = settle;
+
+      // Cancel FIRST in the array: Android assigns its three slots from the
+      // END (positive, negative, neutral), so this order puts Instagram on
+      // the positive button and leaves Cancel neutral. iOS keeps the written
+      // order and pins the cancel style to the bottom either way. Tests
+      // therefore match buttons by TEXT, never by index.
+      Alert.alert(
+        SOURCE_CHOICE_TITLE,
+        SOURCE_CHOICE_BODY,
+        [
+          { text: SOURCE_CHOICE_CANCEL_LABEL, style: 'cancel', onPress: () => settle(null) },
+          { text: SOURCE_LABEL.facebook, onPress: () => settle('facebook') },
+          { text: SOURCE_LABEL.instagram, onPress: () => settle('instagram') },
+        ],
+        // `onDismiss` is Android-only (a back-press or an outside tap); iOS
+        // always has the Cancel button, so both platforms can always answer.
+        { cancelable: true, onDismiss: () => settle(null) },
+      );
+    });
+  }, [preferredSource, remainingPostsFor]);
 
   const handleRefused = useCallback(
     async (jobConversationId: string) => {
@@ -127,11 +226,12 @@ export function ImportHowToScreen(): React.JSX.Element {
   const handleChooseFiles = useCallback(() => {
     if (pickInFlight.current) return;
     pickInFlight.current = true;
+    setPicking(true);
     setError(null);
 
     (async () => {
       try {
-        const result = await pickAndStartParse({ conversationId, source });
+        const result = await pickAndStartParse({ conversationId, chooseSource });
         if (!mounted.current) return;
         switch (result.kind) {
           case 'preflight':
@@ -154,9 +254,10 @@ export function ImportHowToScreen(): React.JSX.Element {
         if (mounted.current) setError(PICK_FAILURE_COPY.other);
       } finally {
         pickInFlight.current = false;
+        if (mounted.current) setPicking(false);
       }
     })();
-  }, [conversationId, source, navigation, handleRefused]);
+  }, [conversationId, chooseSource, navigation, handleRefused]);
 
   const handleCancelParse = useCallback(() => {
     cancelImport();
@@ -221,13 +322,14 @@ export function ImportHowToScreen(): React.JSX.Element {
 
   const buttonStyle: ViewStyle = { marginTop: theme.spacing.lg };
 
-  const allowance = availability.allowance;
-  const remainingPosts =
-    allowance === null ? null : Math.max(0, allowance.postsLimit - allowance.postsUsed);
+  // BOTH buckets: the allowance is per source (#996/B#352), and a member who
+  // has used one up still has the other.
+  const facebookLeft = remainingPostsFor('facebook');
+  const instagramLeft = remainingPostsFor('instagram');
 
   return (
     <SafeAreaView style={containerStyle} edges={['top']} testID="import-how-to-screen">
-      <Header title={describeStartRow(source)} onBack={() => navigation.goBack()} />
+      <Header title={HOW_TO_TITLE} onBack={() => navigation.goBack()} />
       {phase === 'parsing' ? (
         <ImportParseView progress={parseProgress} onCancel={handleCancelParse} />
       ) : (
@@ -242,34 +344,46 @@ export function ImportHowToScreen(): React.JSX.Element {
             while every other surface shows OpenMoji.
           */}
           <EmojiText style={bodyStyle} testID="import-how-to-intro">
-            {describeHowToIntro(source, orbitName)}
+            {describeHowToIntro(orbitName)}
           </EmojiText>
           <EmojiText style={captionStyle} testID="import-how-to-orbit">
             {describeIntoCaption(orbitName)}
           </EmojiText>
-          {remainingPosts !== null && (
+          {preferredSource !== undefined && (
+            <Text style={captionStyle} testID="import-how-to-preferred">
+              {describeImportOtherCaption(preferredSource)}
+            </Text>
+          )}
+          {facebookLeft !== null && instagramLeft !== null && (
             <Text style={captionStyle} testID="import-how-to-allowance">
-              {describeAllowance(remainingPosts)}
+              {describeAllowances(facebookLeft, instagramLeft)}
             </Text>
           )}
 
           <SectionHeader label="Export your posts" />
-          {describeHowToSteps(source).map((step, index) => (
+          {HOW_TO_STEPS.map((step, index) => (
             <View key={step} style={stepRowStyle}>
               <Text style={stepNumberStyle}>{`${index + 1}.`}</Text>
               <Text style={stepTextStyle}>{step}</Text>
             </View>
           ))}
 
-          <TouchableOpacity
-            style={linkRowStyle}
-            onPress={handleOpenAccountsCenter}
-            accessibilityRole="link"
-            accessibilityLabel={ACCOUNTS_CENTER_LINK_LABEL}
-            testID="import-accounts-center-link"
-          >
-            <Text style={linkStyle}>{ACCOUNTS_CENTER_LINK_LABEL}</Text>
-          </TouchableOpacity>
+          {/*
+            One link per platform: an Instagram-only member cannot reach their
+            download through the Facebook host, and vice versa.
+          */}
+          {SOURCES.map((source) => (
+            <TouchableOpacity
+              key={source}
+              style={linkRowStyle}
+              onPress={() => handleOpenAccountsCenter(source)}
+              accessibilityRole="link"
+              accessibilityLabel={ACCOUNTS_CENTER_LINK_LABEL[source]}
+              testID={`import-accounts-center-link-${source}`}
+            >
+              <Text style={linkStyle}>{ACCOUNTS_CENTER_LINK_LABEL[source]}</Text>
+            </TouchableOpacity>
+          ))}
 
           <SectionHeader label="Before you start" />
           {HOW_TO_NOTES.map((note) => (
@@ -282,6 +396,7 @@ export function ImportHowToScreen(): React.JSX.Element {
             <Button
               title={CHOOSE_FILES_LABEL}
               onPress={handleChooseFiles}
+              loading={picking}
               testID="import-choose-files"
             />
           </View>

@@ -42,6 +42,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { closeDatabase } from '../../../database/connection';
 import {
   createImportJob,
+  finishImportJob,
   getImportJob,
   insertImportItems,
   setImportJobParsed,
@@ -62,6 +63,7 @@ import type { ImportDbHarness } from '../testUtils/importDbHarness';
 import type { ImportItemInsert } from '../../../database/repositories/importRepository';
 import type { ImportLimits } from '../../../types/api';
 import type { ArchiveImportSession } from '../archiveAccess';
+import type { ImportPreflight } from '../importRunner';
 import type { ImportSource, ParseSummary, SkipReason } from '../types';
 
 jest.mock('@op-engineering/op-sqlite', () => ({ open: jest.fn() }));
@@ -286,7 +288,9 @@ jest.mock('../../../stores/useAppStore', () => ({
 }));
 
 import {
+  canStartFromPreflight,
   cancelImport,
+  closeOtherImport,
   confirmAndRunImport,
   discardImportPreflight,
   dismissImportSummary,
@@ -337,17 +341,73 @@ function rateLimited(ms: number) {
   return new RateLimitError({ get: () => String(ms / 1000) });
 }
 
+/**
+ * Both sources' buckets, as the preflight GET always returns them (B#352).
+ *
+ * `over` replaces a WHOLE bucket, the way the response does: there is no
+ * partial allowance on the wire, and a half-overridden one would make a
+ * missing limit read as "no room left".
+ */
+function allowances(over: Partial<Record<ImportSource, ReturnType<typeof allowance>>> = {}) {
+  return { facebook: allowance(), instagram: allowance(), ...over };
+}
+
 function groupImports(over: Record<string, unknown> = {}) {
-  return { allowance: allowance(), openImport: null, limits: LIMITS, ...over };
+  return { allowances: allowances(), openImport: null, limits: LIMITS, ...over };
+}
+
+/** The open session the preflight reports, defaulting to OUR source. */
+function openImport(over: Record<string, unknown> = {}) {
+  return {
+    importId: IMPORT_ID,
+    status: 'open',
+    source: 'facebook',
+    declaredPosts: 1,
+    declaredBytes: 4096,
+    createdPosts: 0,
+    lastActivityAt: '2012-08-26T00:00:00.000Z',
+    ...over,
+  };
 }
 
 let harness: ImportDbHarness;
 
 /** An `ArchiveImportSession` double whose extract always succeeds. */
-function archiveSession(parts: readonly string[] = ['part-a']): ArchiveImportSession {
+/**
+ * Post-JSON paths `layout.matchPostJsonPath` recognises, per source.
+ *
+ * The archive double's `entries` is what `detectSources` reads, so an empty
+ * list means "neither source" — which is now a `no_posts` failure, not a
+ * harmless default. Every fixture therefore declares what it holds.
+ */
+const FB_ENTRY = {
+  entryId: 'e-fb',
+  path: 'your_facebook_activity/posts/your_posts__check_ins__photos_and_videos_1.json',
+};
+const IG_ENTRY = { entryId: 'e-ig', path: 'your_instagram_activity/content/posts_1.json' };
+
+/** An archive double holding Instagram posts only. */
+function instagramArchiveSession(): ArchiveImportSession {
+  return archiveSession(['part-a'], [IG_ENTRY]);
+}
+
+/** An archive double holding BOTH sources, which is what makes the chooser run. */
+function bothSourcesArchiveSession(): ArchiveImportSession {
+  return archiveSession(['part-a'], [FB_ENTRY, IG_ENTRY]);
+}
+
+/** An archive double whose files hold no post JSON of either source. */
+function noPostsArchiveSession(): ArchiveImportSession {
+  return archiveSession(['part-a'], []);
+}
+
+function archiveSession(
+  parts: readonly string[] = ['part-a'],
+  entries: readonly { entryId: string; path: string }[] = [FB_ENTRY],
+): ArchiveImportSession {
   return {
     parts,
-    entries: [],
+    entries,
     telemetry: {} as never,
     resolveMediaUris: jest.fn(() => []),
     readEntryJson: jest.fn(),
@@ -466,6 +526,12 @@ function soleJob(): {
     .get() as { status: string; declared_posts: number | null; declared_bytes: number | null };
 }
 
+/** The one job row's source, for the paths whose id is a fresh UUID. */
+function soleJobSource(): string {
+  return (harness.sqlite.prepare('SELECT source FROM import_jobs').get() as { source: string })
+    .source;
+}
+
 function itemRows(): { id: string; status: string; error_code: string | null }[] {
   return harness.sqlite
     .prepare('SELECT id, status, error_code FROM import_items ORDER BY ordinal')
@@ -531,7 +597,12 @@ async function drain(times = 80): Promise<void> {
 /** A parse that emits `posts` importable items and the given skips. */
 function parseEmitting(
   posts: number,
-  options: { skips?: readonly SkipReason[]; mediaPerPost?: number } = {},
+  options: {
+    skips?: readonly SkipReason[];
+    mediaPerPost?: number;
+    /** What the PARSER saw besides this source — the real one sets it too. */
+    otherSourceDetected?: boolean;
+  } = {},
 ): void {
   mockParseArchive.mockImplementation(
     async (_session: unknown, opts: Record<string, Function>): Promise<ParseSummary> => {
@@ -570,7 +641,7 @@ function parseEmitting(
         );
       }
       opts.onProgress?.({ postsSeen: posts, mediaPeeked: 0 });
-      return summaryWith(posts, options.skips ?? []);
+      return summaryWith(posts, options.skips ?? [], options.otherSourceDetected ?? false);
     },
   );
 }
@@ -593,7 +664,11 @@ function zeroSkips(): Record<SkipReason, number> {
   };
 }
 
-function summaryWith(importable: number, skips: readonly SkipReason[]): ParseSummary {
+function summaryWith(
+  importable: number,
+  skips: readonly SkipReason[],
+  otherSourceDetected = false,
+): ParseSummary {
   const skipped = zeroSkips();
   for (const reason of skips) skipped[reason] += 1;
   return {
@@ -604,7 +679,7 @@ function summaryWith(importable: number, skips: readonly SkipReason[]): ParseSum
     latestDate: POST_DATE,
     fileIssues: [],
     idScheme: { fbid: 0, content: importable },
-    otherSourceDetected: false,
+    otherSourceDetected,
     locationDataRemoved: false,
   };
 }
@@ -672,6 +747,7 @@ beforeEach(() => {
   mockStartImport.mockResolvedValue({
     importId: IMPORT_ID,
     status: 'open',
+    source: 'facebook',
     declaredPosts: 2,
     declaredBytes: 4096,
     allowance: allowance(),
@@ -681,6 +757,7 @@ beforeEach(() => {
     importId: IMPORT_ID,
     groupId: ORBIT,
     status: 'open',
+    source: 'facebook',
     declaredPosts: 2,
     declaredBytes: 4096,
     createdPosts: 0,
@@ -765,7 +842,7 @@ describe('store and the #928 boundary', () => {
 
   it('keeps the preflight in the store, so it survives an unmount', async () => {
     parseEmitting(3);
-    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     expect(result.kind).toBe('preflight');
     const state = importStore.getState();
@@ -800,7 +877,7 @@ describe('store and the #928 boundary', () => {
       createdAt: POST_DATE,
     });
 
-    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     expect(result).toEqual({
       kind: 'refused',
@@ -816,12 +893,15 @@ describe('store and the #928 boundary', () => {
 
     expect(first.available).toBe(true);
     expect(first.limits).toEqual(LIMITS);
+    // Both buckets, which is what lets the how-to screen price either source
+    // without a second round trip (B#352).
+    expect(Object.keys(first.allowances ?? {}).sort()).toEqual(['facebook', 'instagram']);
     expect(second).toBe(first);
     expect(mockGetGroupImports).toHaveBeenCalledTimes(1);
 
     mockGetGroupImports.mockRejectedValueOnce(new NotFoundError());
     const off = await probeImportAvailability('orbit-off');
-    expect(off).toEqual({ available: false, allowance: null, limits: null });
+    expect(off).toEqual({ available: false, allowances: null, limits: null });
   });
 
   it('never caches a transient probe failure as unavailable', async () => {
@@ -1057,10 +1137,12 @@ describe('resume at launch', () => {
 
 describe('the allowance gate', () => {
   it('refuses an archive over the remaining POST allowance at preflight', async () => {
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(200) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(200) }) }),
+    );
     parseEmitting(900);
 
-    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     expect(result.kind).toBe('preflight');
     const preflight = result.kind === 'preflight' ? result.preflight : null;
@@ -1073,20 +1155,27 @@ describe('the allowance gate', () => {
 
   it('refuses an archive over the remaining BYTE allowance', async () => {
     mockGetGroupImports.mockResolvedValue(
-      groupImports({ allowance: { ...allowance(), bytesUsed: 2 * 1024 * 1024 * 1024 - 10 } }),
+      groupImports({
+        allowances: allowances({
+          facebook: { ...allowance(), bytesUsed: 2 * 1024 * 1024 * 1024 - 10 },
+        }),
+      }),
     );
     mockOpenArchiveSession.mockImplementation(async () => {
       const session = archiveSession();
       return {
         ...session,
         entries: [
+          // The post JSON is what `detectSources` reads; the media entry is
+          // what `declaredByEntry` prices.
+          FB_ENTRY,
           { entryId: 'entry-0-0', path: 'a.jpg', kind: 'image', declaredSize: 4096, skip: null },
         ],
       } as unknown as ArchiveImportSession;
     });
     parseEmitting(1, { mediaPerPost: 1 });
 
-    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     const preflight = result.kind === 'preflight' ? result.preflight : null;
     expect(preflight?.overAllowance).toBe('bytes');
@@ -1097,10 +1186,12 @@ describe('the allowance gate', () => {
   });
 
   it('accepts an archive that fits, and declares exactly what it parsed', async () => {
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(200) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(200) }) }),
+    );
     parseEmitting(800);
 
-    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     const preflight = result.kind === 'preflight' ? result.preflight : null;
     expect(preflight?.overAllowance).toBeNull();
@@ -1111,9 +1202,11 @@ describe('the allowance gate', () => {
   });
 
   it('refuses a run the preflight already refused', async () => {
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(999) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(999) }) }),
+    );
     parseEmitting(50);
-    await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     await confirmAndRunImport();
 
@@ -1144,7 +1237,7 @@ describe('the allowance gate', () => {
   it('refuses an archive with nothing importable in it, without a session', async () => {
     parseEmitting(0, { skips: ['held_video', 'unsupported_post_type'] });
 
-    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     const preflight = result.kind === 'preflight' ? result.preflight : null;
     // `declared_posts` must be 1..1000, so a video-only export would otherwise
@@ -1181,17 +1274,19 @@ describe('the allowance gate', () => {
 
   it('re-reads the allowance for a second import in the same app session', async () => {
     parseEmitting(1);
-    await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
     await confirmAndRunImport();
     await drain();
     expect(importStore.getState().phase).toBe('done');
     dismissImportSummary();
 
     // The orbit's lifetime counters have advanced by what that run created.
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(1, 6208) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(1, 6208) }) }),
+    );
     parseEmitting(1);
 
-    const second = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const second = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     // The session-long probe cache used to gate the second import against the
     // PRE-first-import counters, so it passed preflight and was then refused
@@ -1713,22 +1808,11 @@ describe('the server session', () => {
       new ConflictError(
         JSON.stringify({
           error: 'IMPORT_REFUSED',
-          details: { code: 'IMPORT_IN_PROGRESS', import_id: IMPORT_ID },
+          details: { code: 'IMPORT_IN_PROGRESS', import_id: IMPORT_ID, source: 'facebook' },
         }),
       ),
     );
-    mockGetGroupImports.mockResolvedValue(
-      groupImports({
-        openImport: {
-          importId: IMPORT_ID,
-          status: 'open',
-          declaredPosts: 1,
-          declaredBytes: 4096,
-          createdPosts: 0,
-          lastActivityAt: '2012-08-26T00:00:00.000Z',
-        },
-      }),
-    );
+    mockGetGroupImports.mockResolvedValue(groupImports({ openImport: openImport() }));
     // The preflight adopts that id, the batch is refused as closed, and the
     // restart is answered with the SAME id: nothing new was learned, and
     // answering `retry` for it would re-POST as fast as the loop can go.
@@ -1753,16 +1837,7 @@ describe('the server session', () => {
   it('adopts the member open session rather than starting a second one', async () => {
     seedJob({ status: 'ready', items: 1 });
     mockGetGroupImports.mockResolvedValue(
-      groupImports({
-        openImport: {
-          importId: 'import-open',
-          status: 'open',
-          declaredPosts: 1,
-          declaredBytes: 4096,
-          createdPosts: 0,
-          lastActivityAt: '2012-08-26T00:00:00.000Z',
-        },
-      }),
+      groupImports({ openImport: openImport({ importId: 'import-open' }) }),
     );
 
     await resumeImportAtLaunch();
@@ -2560,7 +2635,7 @@ describe('cancelling with no ActiveRun', () => {
   it('hands the abort signal to the archive session and to the parser', async () => {
     parseEmitting(1);
 
-    await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     expect(mockOpenArchiveSession).toHaveBeenCalledWith(['part-a'], {
       signal: expect.any(AbortSignal),
@@ -2571,7 +2646,7 @@ describe('cancelling with no ActiveRun', () => {
   it('cancels a live parse, deleting the job and landing on idle', async () => {
     parseUntilAborted();
 
-    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const picking = pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
     await drain();
     expect(importStore.getState().phase).toBe('parsing');
 
@@ -2616,7 +2691,7 @@ describe('cancelling with no ActiveRun', () => {
       },
     );
 
-    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const picking = pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
     await reached.promise;
 
     resetImportRunnerState();
@@ -2636,7 +2711,7 @@ describe('cancelling with no ActiveRun', () => {
     // `parseIntoJob` has nothing honest to build a preflight from.
     mockGetGroupImports.mockRejectedValue(new NotFoundError());
 
-    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     expect(result).toEqual({ kind: 'cancelled' });
     // The row used to survive as `parsing`, which refused every later pick.
@@ -2647,7 +2722,7 @@ describe('cancelling with no ActiveRun', () => {
 
   it('leaves a LIVE parse alone when the launch gate runs mid-parse', async () => {
     parseUntilAborted();
-    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const picking = pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
     await drain();
     expect(importStore.getState().phase).toBe('parsing');
 
@@ -3183,7 +3258,7 @@ describe('what a pick that fails answers', () => {
 
     // An HTML export, or a file that is not a ZIP at all. Reported as
     // `cancelled`, the how-to screen simply did nothing.
-    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+    expect(await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() })).toEqual({
       kind: 'failed',
       reason: 'archive',
     });
@@ -3197,7 +3272,7 @@ describe('what a pick that fails answers', () => {
 
     // It clears itself, so the copy says "try again in a minute" where the
     // archive copy would say "re-export".
-    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+    expect(await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() })).toEqual({
       kind: 'failed',
       reason: 'key_pending',
     });
@@ -3208,7 +3283,7 @@ describe('what a pick that fails answers', () => {
     parseEmitting(1);
     mockGetGroupImports.mockRejectedValue(new NetworkError('offline'));
 
-    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+    expect(await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() })).toEqual({
       kind: 'failed',
       reason: 'network',
     });
@@ -3219,7 +3294,7 @@ describe('what a pick that fails answers', () => {
   it('falls back to other for a failure with no class of its own', async () => {
     mockParseArchive.mockRejectedValue(new TypeError('boom'));
 
-    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+    expect(await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() })).toEqual({
       kind: 'failed',
       reason: 'other',
     });
@@ -3244,7 +3319,7 @@ describe('what a pick that fails answers', () => {
 
     // Neither is a failure: nothing was chosen, or the member stopped it, and
     // #928 shows no message for either.
-    expect(await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' })).toEqual({
+    expect(await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() })).toEqual({
       kind: 'cancelled',
     });
     expect(jobCount()).toBe(0);
@@ -3454,7 +3529,7 @@ describe('the unmigrated list', () => {
         throw new ArchiveReaderError('ECANCELLED');
       },
     );
-    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const picking = pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
     await drain();
     expect(importStore.getState().phase).toBe('parsing');
 
@@ -3538,7 +3613,7 @@ describe('discarding a preflight', () => {
     await discardImportPreflight();
 
     parseEmitting(2);
-    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     // A `ready` job left behind answers every later pick `job-running`, with
     // no way for the member to start over.
@@ -3548,9 +3623,11 @@ describe('discarding a preflight', () => {
   it('returns a refused preflight to idle', async () => {
     // Over the remaining allowance: the job is already `cancelled`, but the
     // store still reads `ready` with the refusal on screen.
-    mockGetGroupImports.mockResolvedValue(groupImports({ allowance: allowance(999) }));
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(999) }) }),
+    );
     parseEmitting(2);
-    const result = await pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
     expect(result.kind).toBe('preflight');
     expect(importStore.getState().preflight?.overAllowance).toBe('posts');
     expect(importStore.getState().phase).toBe('ready');
@@ -3727,7 +3804,7 @@ describe('a member action racing the pre-run gate', () => {
     const keyOpen = deferred();
     mockKeyOpenGate = keyOpen.promise;
 
-    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const picking = pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
     await drain();
     resetImportRunnerState();
     mockKeyOpenGate = null;
@@ -3985,7 +4062,7 @@ describe('a queued pre-run action', () => {
     const opening = deferred<ArchiveImportSession>();
     mockOpenArchiveSession.mockImplementation(() => opening.promise);
 
-    const picking = pickAndStartParse({ conversationId: ORBIT, source: 'facebook' });
+    const picking = pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
     await drain();
     resetImportRunnerState();
     opening.resolve(archiveSession());
@@ -3996,5 +4073,862 @@ describe('a queued pre-run action', () => {
     expect(mockKeySessions).toHaveLength(0);
     expect(jobCount()).toBe(0);
     expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+});
+
+// ===========================================================================
+// Group: which source this archive is (#996)
+// ===========================================================================
+
+describe('source detection at the pick', () => {
+  it('uses the only source in the archive, without asking', async () => {
+    mockOpenArchiveSession.mockImplementation(async () => instagramArchiveSession());
+    parseEmitting(1);
+    const chooseSource = jest.fn();
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource });
+
+    // One source is not a choice. Asking anyway is the dead end #996 removes:
+    // a member who picks the row that is not in their export.
+    expect(chooseSource).not.toHaveBeenCalled();
+    expect(result.kind).toBe('preflight');
+    expect(soleJob().status).toBe('ready');
+    expect(importStore.getState().source).toBe('instagram');
+    expect(importStore.getState().preflight?.source).toBe('instagram');
+  });
+
+  it('uses Facebook when that is all the archive holds', async () => {
+    parseEmitting(1);
+    const chooseSource = jest.fn();
+
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource });
+
+    expect(chooseSource).not.toHaveBeenCalled();
+    expect(importStore.getState().preflight?.source).toBe('facebook');
+  });
+
+  it('fails with no_posts when neither source is in the files', async () => {
+    mockOpenArchiveSession.mockImplementation(async () => noPostsArchiveSession());
+    const chooseSource = jest.fn();
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource });
+
+    // Readable files that simply hold no posts — a different ask from
+    // `archive`, which is about files Orbital could not read at all.
+    expect(result).toEqual({ kind: 'failed', reason: 'no_posts' });
+    expect(chooseSource).not.toHaveBeenCalled();
+    // Nothing was opened, written or kept: no key session, no row, no grant,
+    // and the store never left idle.
+    expect(mockKeySessions).toHaveLength(0);
+    expect(jobCount()).toBe(0);
+    expect(mockReleaseArchiveParts).toHaveBeenCalledWith(['part-a']);
+    expect(mockParseArchive).not.toHaveBeenCalled();
+    // Not one publish: the pick failed before the `parsing` state existed, so
+    // whatever the screen was showing is still what it shows.
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+
+  it('asks which source first when the archive holds both', async () => {
+    mockOpenArchiveSession.mockImplementation(async () => bothSourcesArchiveSession());
+    parseEmitting(1);
+    const chooseSource = jest.fn().mockResolvedValue('instagram');
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource });
+
+    expect(chooseSource).toHaveBeenCalledTimes(1);
+    expect(result.kind).toBe('preflight');
+    // Each job is single-source; the summary offers the other afterwards.
+    expect(soleJobSource()).toBe('instagram');
+    expect(importStore.getState().preflight?.source).toBe('instagram');
+  });
+
+  it.each([
+    ['the member backs out', async () => null],
+    ['the chooser rejects', async () => Promise.reject(new Error('boom'))],
+    ['the answer is not a source', async () => 'threads'],
+    ['the answer is undefined', async () => undefined],
+  ])('cancels when %s', async (_label, answer) => {
+    mockOpenArchiveSession.mockImplementation(async () => bothSourcesArchiveSession());
+    parseEmitting(1);
+
+    const result = await pickAndStartParse({
+      conversationId: ORBIT,
+      chooseSource: answer as () => Promise<never>,
+    });
+
+    // A non-literal is the dangerous one: it would otherwise become a job
+    // row, a key session and an allowance bucket that do not exist.
+    expect(result).toEqual({ kind: 'cancelled' });
+    expect(mockKeySessions).toHaveLength(0);
+    expect(jobCount()).toBe(0);
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+
+  it('settles the chooser when the member cancels the pick', async () => {
+    mockOpenArchiveSession.mockImplementation(async () => bothSourcesArchiveSession());
+    const pending = deferred<'facebook' | 'instagram' | null>();
+
+    const picking = pickAndStartParse({
+      conversationId: ORBIT,
+      chooseSource: () => pending.promise,
+    });
+    await drain();
+
+    // Without the abort race this waits for a member who may never answer,
+    // holding the archive session and the picker's grant.
+    cancelImport();
+
+    expect(await picking).toEqual({ kind: 'cancelled' });
+    expect(jobCount()).toBe(0);
+    expect(mockParseArchive).not.toHaveBeenCalled();
+  });
+
+  it('settles the chooser on a wipe, and writes nothing', async () => {
+    mockOpenArchiveSession.mockImplementation(async () => bothSourcesArchiveSession());
+    const pending = deferred<'facebook' | 'instagram' | null>();
+
+    const picking = pickAndStartParse({
+      conversationId: ORBIT,
+      chooseSource: () => pending.promise,
+    });
+    await drain();
+
+    resetImportRunnerState();
+
+    expect(await picking).toEqual({ kind: 'cancelled' });
+    expect(jobCount()).toBe(0);
+    expect(mockGetGroupImports).not.toHaveBeenCalled();
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+
+  it('ignores a late answer from a chooser nobody is waiting for', async () => {
+    mockOpenArchiveSession.mockImplementation(async () => bothSourcesArchiveSession());
+    const pending = deferred<'facebook' | 'instagram' | null>();
+    parseEmitting(1);
+
+    const picking = pickAndStartParse({
+      conversationId: ORBIT,
+      chooseSource: () => pending.promise,
+    });
+    await drain();
+    cancelImport();
+    await picking;
+
+    // The dialog was still up when the pick settled; answering it now must
+    // not resurrect the parse.
+    pending.resolve('facebook');
+    await drain();
+
+    expect(jobCount()).toBe(0);
+    expect(mockParseArchive).not.toHaveBeenCalled();
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+});
+
+// ===========================================================================
+// Group: pricing one source at a time (#996 / B#352)
+// ===========================================================================
+
+describe('the per-source allowance', () => {
+  it('refuses a Facebook archive the Facebook bucket cannot take', async () => {
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(999) }) }),
+    );
+    parseEmitting(5);
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+    expect(preflight?.overAllowance).toBe('posts');
+    expect(preflight?.remainingPosts).toBe(1);
+  });
+
+  it('leaves the other bucket alone', async () => {
+    // Facebook is spent; the same archive read as Instagram still fits.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(1000) }) }),
+    );
+    mockOpenArchiveSession.mockImplementation(async () => instagramArchiveSession());
+    parseEmitting(5);
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+    expect(preflight?.source).toBe('instagram');
+    expect(preflight?.overAllowance).toBeNull();
+    expect(preflight?.remainingPosts).toBe(1000);
+  });
+
+  it('rebuilds a launched job against ITS source, not the default', async () => {
+    seedJob({ status: 'ready', items: 1, source: 'instagram' });
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({
+        allowances: allowances({ facebook: allowance(1000), instagram: allowance(10) }),
+      }),
+    );
+
+    await resumeImportAtLaunch();
+
+    // Pricing an Instagram job against the Facebook bucket is how a member
+    // gets refused at start by a number the preflight never showed them.
+    expect(importStore.getState().preflight?.source).toBe('instagram');
+    expect(importStore.getState().preflight?.remainingPosts).toBe(990);
+  });
+
+  it.each([
+    ['there is no allowances map at all', {}],
+    ['a bucket is missing', { allowances: { facebook: allowance() } }],
+    [
+      'a bucket is half-populated',
+      { allowances: { facebook: { postsUsed: 1 }, instagram: allowance() } },
+    ],
+    [
+      'a limit is not a finite number',
+      {
+        allowances: {
+          facebook: { ...allowance(), postsLimit: Number.NaN },
+          instagram: allowance(),
+        },
+      },
+    ],
+  ])('reads a response as unavailable when %s', async (_label, over) => {
+    mockGetGroupImports.mockResolvedValue({ openImport: null, limits: LIMITS, ...over });
+
+    const probe = await probeImportAvailability(ORBIT);
+
+    // Fail closed: "remaining" is a used/limit PAIR, so a half-populated
+    // bucket would read as zero room and refuse an archive that fits.
+    expect(probe).toEqual({ available: false, allowances: null, limits: null });
+    // NOT cached — only a 404 is sticky, so a server deploy mid-session fixes
+    // itself without a relaunch.
+    mockGetGroupImports.mockResolvedValue(groupImports());
+    expect((await probeImportAvailability(ORBIT)).available).toBe(true);
+  });
+
+  it('caches a 404 but never a wipe', async () => {
+    mockGetGroupImports.mockImplementation(async () => {
+      // The account is torn down while the GET is in flight.
+      resetImportRunnerState();
+      return groupImports();
+    });
+
+    const probe = await probeImportAvailability(ORBIT);
+
+    // No allowance residue for the next account on this device.
+    expect(probe.available).toBe(false);
+    mockGetGroupImports.mockResolvedValue(groupImports());
+    expect((await probeImportAvailability(ORBIT)).available).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Group: the other source's open session (#996)
+// ===========================================================================
+
+describe('an open import of the other source', () => {
+  it('blocks the start without refusing the archive', async () => {
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ openImport: openImport({ source: 'instagram' }) }),
+    );
+    parseEmitting(2);
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+
+    // The archive is fine; the member's OTHER import is holding the one open
+    // slot. Refusing here would release the grant and delete a job they can
+    // run the moment that session closes.
+    expect(preflight?.otherOpenImport).toEqual({ importId: IMPORT_ID });
+    // Runnable as an ARCHIVE — the two refusals are both clear — but not
+    // startable, which is the distinction `canStartFromPreflight` draws.
+    expect(preflight?.overAllowance).toBeNull();
+    expect(preflight?.nothingToImport).toBe(false);
+    expect(canStartFromPreflight(preflight as ImportPreflight)).toBe(false);
+    expect(soleJob().status).toBe('ready');
+
+    await confirmAndRunImport();
+    await drain();
+
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(importStore.getState().phase).toBe('ready');
+  });
+
+  it('is null for an open session of our OWN source', async () => {
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ openImport: openImport({ source: 'facebook' }) }),
+    );
+    parseEmitting(1);
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+
+    // Ours is an ADOPTION, which the run handles; it is not a block.
+    expect(preflight?.otherOpenImport).toBeNull();
+    expect(canStartFromPreflight(preflight as ImportPreflight)).toBe(true);
+  });
+
+  it.each([
+    ['the server states no source', { source: undefined }],
+    ['the source is not one we know', { source: 'threads' }],
+  ])('counts a session as foreign when %s', async (_label, over) => {
+    mockGetGroupImports.mockResolvedValue(groupImports({ openImport: openImport(over) }));
+    parseEmitting(1);
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+
+    // Fail closed: a session we cannot confirm is one we must not adopt —
+    // adopting it spends the wrong bucket and closes it on our settle.
+    expect(preflight?.otherOpenImport).toEqual({ importId: IMPORT_ID });
+  });
+
+  it('ignores a session that is not open', async () => {
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ openImport: openImport({ source: 'instagram', status: 'completed' }) }),
+    );
+    parseEmitting(1);
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+
+    expect(preflight?.otherOpenImport).toBeNull();
+  });
+});
+
+// ===========================================================================
+// Group: never adopt the other source's session (#996)
+// ===========================================================================
+
+describe('a session that is not ours to adopt', () => {
+  /** A 409 `IMPORT_IN_PROGRESS`, with whatever details the server stated. */
+  function inProgress(details: Record<string, unknown>): ConflictError {
+    return new ConflictError(
+      JSON.stringify({
+        error: 'IMPORT_REFUSED',
+        details: { code: 'IMPORT_IN_PROGRESS', ...details },
+      }),
+    );
+  }
+
+  const FOREIGN_ID = '99999999-8888-4777-8666-555555555555';
+
+  /**
+   * The first TWO GETs are clean and every later one answers `over`.
+   *
+   * Two, because the confirm re-prices unconditionally before starting
+   * (§7.2): the launch rebuild is the first, the confirm's is the second, and
+   * only then does the run make its own. That is what makes these true
+   * races — a foreign session visible at either of the first two stops the
+   * member at the Import button instead, which is the point of §7.2.
+   */
+  function foreignFromTheThirdGetOn(over: Record<string, unknown>): void {
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      return gets <= 2 ? groupImports() : groupImports(over);
+    });
+  }
+
+  /** Launch a `ready` job, confirm it, and let the run settle. */
+  async function confirmReadyJob(): Promise<void> {
+    await resumeImportAtLaunch();
+    await confirmAndRunImport();
+    await drain();
+  }
+
+  it("is terminal when the run's own GET finds the other source", async () => {
+    seedJob({ status: 'ready', items: 1 });
+    foreignFromTheThirdGetOn({
+      openImport: openImport({ importId: FOREIGN_ID, source: 'instagram' }),
+    });
+
+    await confirmReadyJob();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockStartImport).not.toHaveBeenCalled();
+    // THE rule: `settleRun` completes whatever `r.importId` holds, so a
+    // foreign id must never be assigned — adopting it would close the
+    // member's other import on our way out.
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+    expect(jobRow().session_id).toBeNull();
+  });
+
+  it('is terminal when the START refusal names the other source', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    mockStartImport.mockRejectedValue(inProgress({ import_id: FOREIGN_ID, source: 'instagram' }));
+
+    await confirmReadyJob();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+    expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+    expect(itemRows()[0].status).toBe('pending');
+  });
+
+  it('looks the session up when the refusal states nothing, and refuses a foreign one', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    mockStartImport.mockRejectedValue(inProgress({}));
+    // The run's own preflight GET sees nothing open; the lookup AFTER the
+    // refusal is what finds the other source's session.
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      return gets <= 3
+        ? groupImports()
+        : groupImports({ openImport: openImport({ importId: FOREIGN_ID, source: 'instagram' }) });
+    });
+
+    await confirmReadyJob();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+  });
+
+  it('adopts the looked-up session when it IS ours', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    mockStartImport.mockRejectedValue(inProgress({}));
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      return gets <= 3
+        ? groupImports()
+        : groupImports({ openImport: openImport({ importId: 'import-ours', source: 'facebook' }) });
+    });
+
+    await confirmReadyJob();
+
+    // Same source: the ordinary adoption, unchanged by #996.
+    expect(mockSubmitImportBatch).toHaveBeenCalledWith('import-ours', expect.anything());
+    expect(jobRow().status).toBe('completed');
+  });
+
+  it('counts an unstated source as foreign', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    // Only an id: a pre-B#352 server, or one whose winner vanished. We cannot
+    // confirm it, so we must not take it.
+    mockStartImport.mockRejectedValue(inProgress({ import_id: FOREIGN_ID }));
+    foreignFromTheThirdGetOn({
+      openImport: openImport({ importId: FOREIGN_ID, source: undefined }),
+    });
+
+    await confirmReadyJob();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+  });
+
+  it('is terminal on the RESTART path too', async () => {
+    seedJob({ items: 1, sessionId: IMPORT_ID });
+    // The session was abandoned, so the run restarts — and the restart is
+    // refused because the member's other import took the slot meanwhile.
+    mockSubmitImportBatch.mockRejectedValue(
+      new ConflictError(
+        JSON.stringify({
+          error: 'IMPORT_REFUSED',
+          details: { code: 'IMPORT_CLOSED', status: 'abandoned' },
+        }),
+      ),
+    );
+    mockStartImport.mockRejectedValue(inProgress({ import_id: FOREIGN_ID, source: 'instagram' }));
+
+    await confirmAndRunLaunch();
+
+    expect(importStore.getState().summary?.errorCode).toBe('OTHER_IMPORT_OPEN');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(FOREIGN_ID);
+    // Our OWN session is still completed on the way out — that one is ours.
+    expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
+  });
+});
+
+// ===========================================================================
+// Group: a stale foreign session never destroys a parsed job (#996 §7.2)
+// ===========================================================================
+
+describe('confirming a ready job while the other source is open', () => {
+  it('re-prices and stays ready, leaving the row and its grant alone', async () => {
+    seedJob({ status: 'ready', items: 2, bookmark: ['part-a'] });
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      // Clean at launch; the member's OTHER import takes the slot before they
+      // tap Import.
+      return gets === 1
+        ? groupImports()
+        : groupImports({ openImport: openImport({ importId: 'other-id', source: 'instagram' }) });
+    });
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().preflight?.otherOpenImport).toBeNull();
+
+    await confirmAndRunImport();
+    await drain();
+
+    // The job is PARSED work with a part grant behind it. Burning it on an
+    // `OTHER_IMPORT_OPEN` terminal would make the member re-pick and re-parse
+    // for a session that closes on its own.
+    expect(jobRow().status).toBe('ready');
+    expect(jobRow().archive_bookmark).toBe(JSON.stringify(['part-a']));
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(mockReleaseArchiveParts).not.toHaveBeenCalled();
+    expect(importStore.getState().summary).toBeNull();
+
+    // And the published preflight is the FRESH one, so the view can offer to
+    // close the other import.
+    const state = importStore.getState();
+    expect(state.phase).toBe('ready');
+    expect(state.preflight?.otherOpenImport).toEqual({ importId: 'other-id' });
+    expect(canStartFromPreflight(state.preflight as ImportPreflight)).toBe(false);
+  });
+
+  it('starts normally once that session is gone', async () => {
+    seedJob({ status: 'ready', items: 1, bookmark: ['part-a'] });
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      return gets === 1
+        ? groupImports({ openImport: openImport({ importId: 'other-id', source: 'instagram' }) })
+        : groupImports();
+    });
+
+    await resumeImportAtLaunch();
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: 'other-id' });
+
+    await confirmAndRunImport();
+    await drain();
+
+    // Nothing had to be re-picked: the same parsed job ran.
+    expect(jobRow().status).toBe('completed');
+    expect(itemRows()[0].status).toBe('created');
+  });
+
+  it('falls through to the run when the reprice GET fails', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    let gets = 0;
+    mockGetGroupImports.mockImplementation(async () => {
+      gets += 1;
+      if (gets === 1) return groupImports();
+      throw rateLimited(60_000);
+    });
+
+    await resumeImportAtLaunch();
+    // NOT awaited: the pause this reaches waits out the server's own
+    // `Retry-After`, which is the behaviour under test.
+    void confirmAndRunImport();
+    await drain();
+
+    // `rebuildPreflight` swallows every error into null, so treating that as
+    // "blocked" would lose the countdown and the automatic retry #993's
+    // dropped-verdict fix put on this path. The run's own GET classifies it.
+    expect(importStore.getState().phase).toBe('paused');
+    expect(importStore.getState().pauseCauses).toEqual(['rate_limited']);
+    expect(jobRow().status).toBe('ready');
+  });
+});
+
+// ===========================================================================
+// Group: the session id on our own row (#996 belt check)
+// ===========================================================================
+
+describe('a session whose source does not match the job', () => {
+  it('is a CLIENT_BUG, and still closes the session', async () => {
+    seedJob({ items: 1, source: 'facebook' });
+    mockGetImportSession.mockResolvedValue({
+      importId: IMPORT_ID,
+      groupId: ORBIT,
+      status: 'open',
+      source: 'instagram',
+      declaredPosts: 1,
+      declaredBytes: 4096,
+      createdPosts: 0,
+      createdAt: '2012-08-26T00:00:00.000Z',
+      lastActivityAt: '2012-08-26T00:00:00.000Z',
+      completedAt: null,
+      allowance: allowance(),
+      limits: LIMITS,
+    });
+
+    await confirmAndRunLaunch();
+
+    // This id came off our OWN job row, so a mismatch is not "someone else's
+    // session" — it is this client having written one of the wrong source,
+    // which no path should be able to do.
+    expect(importStore.getState().summary?.errorCode).toBe('CLIENT_BUG');
+    expect(mockSubmitImportBatch).not.toHaveBeenCalled();
+    expect(jobRow().status).toBe('failed');
+    // It IS ours, so completing it on the way out is right.
+    expect(mockCompleteImport).toHaveBeenCalledWith(IMPORT_ID);
+  });
+
+  it('runs normally when the server states no source', async () => {
+    seedJob({ items: 1 });
+    mockGetImportSession.mockResolvedValue({
+      importId: IMPORT_ID,
+      groupId: ORBIT,
+      status: 'open',
+      declaredPosts: 1,
+      declaredBytes: 4096,
+      createdPosts: 0,
+      createdAt: '2012-08-26T00:00:00.000Z',
+      lastActivityAt: '2012-08-26T00:00:00.000Z',
+      completedAt: null,
+      allowance: allowance(),
+      limits: LIMITS,
+    });
+
+    await confirmAndRunLaunch();
+
+    // A belt, not a gate: an older server that says nothing must not fail a
+    // job whose id we wrote ourselves.
+    expect(jobRow().status).toBe('completed');
+  });
+});
+
+// ===========================================================================
+// Group: closing the other source's import (#996 §2)
+// ===========================================================================
+
+describe('closeOtherImport', () => {
+  const OTHER_ID = '99999999-8888-4777-8666-555555555555';
+
+  /** A `ready` job whose preflight is blocked by the other source. */
+  async function readyBlockedByOther(): Promise<void> {
+    seedJob({ status: 'ready', items: 2, bookmark: ['part-a'] });
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ openImport: openImport({ importId: OTHER_ID, source: 'instagram' }) }),
+    );
+    await resumeImportAtLaunch();
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+  }
+
+  it('closes it, re-prices, and lets the import start', async () => {
+    await readyBlockedByOther();
+    // Afterwards the slot is free and the allowance has moved.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(7) }) }),
+    );
+
+    await expect(closeOtherImport()).resolves.toBe('closed');
+
+    expect(mockCompleteImport).toHaveBeenCalledWith(OTHER_ID);
+    const state = importStore.getState();
+    expect(state.phase).toBe('ready');
+    expect(state.preflight?.otherOpenImport).toBeNull();
+    expect(state.preflight?.remainingPosts).toBe(993);
+    expect(canStartFromPreflight(state.preflight as ImportPreflight)).toBe(true);
+    // Nothing local was written: this is a server-side close and a reprice.
+    expect(jobRow().status).toBe('ready');
+    expect(mockReleaseArchiveParts).not.toHaveBeenCalled();
+  });
+
+  it('keeps the parse summary through the reprice', async () => {
+    // From a PARSE, not a launch rebuild: a rebuilt preflight has no summary
+    // to lose (the `ParseSummary` is not persisted), so only this path can
+    // show the reprice preserving one.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ openImport: openImport({ importId: OTHER_ID, source: 'instagram' }) }),
+    );
+    parseEmitting(2, { skips: ['empty_post'] });
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    const before = importStore.getState().preflight?.summary;
+    expect(before).not.toBeNull();
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+    mockGetGroupImports.mockResolvedValue(groupImports());
+
+    await expect(closeOtherImport()).resolves.toBe('closed');
+
+    // Re-pricing with `summary: null` would erase the parse's own answer —
+    // the date range, the file issues, the other-source hint — from a screen
+    // that is only being repriced.
+    expect(importStore.getState().preflight?.summary).toEqual(before);
+  });
+
+  it('treats an already-closed session as closed', async () => {
+    await readyBlockedByOther();
+    mockCompleteImport.mockRejectedValue(
+      new ConflictError(
+        JSON.stringify({
+          error: 'IMPORT_REFUSED',
+          details: { code: 'IMPORT_CLOSED', status: 'completed' },
+        }),
+      ),
+    );
+    mockGetGroupImports.mockResolvedValue(groupImports());
+
+    await expect(closeOtherImport()).resolves.toBe('closed');
+    expect(importStore.getState().preflight?.otherOpenImport).toBeNull();
+  });
+
+  it('treats a session that is not there as closed', async () => {
+    await readyBlockedByOther();
+    mockCompleteImport.mockRejectedValue(new NotFoundError());
+    mockGetGroupImports.mockResolvedValue(groupImports());
+
+    await expect(closeOtherImport()).resolves.toBe('closed');
+  });
+
+  it('fails when the close itself fails, and changes nothing', async () => {
+    await readyBlockedByOther();
+    mockCompleteImport.mockRejectedValue(new NetworkError('offline'));
+
+    await expect(closeOtherImport()).resolves.toBe('failed');
+
+    // The other import is still open, so Import must stay disabled.
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+    expect(jobRow().status).toBe('ready');
+  });
+
+  it('reports closed-stale when the close works but the reprice does not', async () => {
+    await readyBlockedByOther();
+    mockGetGroupImports.mockRejectedValue(new NetworkError('offline'));
+
+    await expect(closeOtherImport()).resolves.toBe('closed-stale');
+
+    // The session IS closed, so this is not a failure — but the preflight on
+    // screen is the old one, and re-tapping is safe because `/complete` is
+    // idempotent.
+    expect(mockCompleteImport).toHaveBeenCalledWith(OTHER_ID);
+    expect(importStore.getState().preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+  });
+
+  it('is cancelled by a wipe mid-close', async () => {
+    await readyBlockedByOther();
+    const completing = deferred<unknown>();
+    mockCompleteImport.mockImplementation(() => completing.promise);
+
+    const closing = closeOtherImport();
+    await drain();
+    resetImportRunnerState();
+    completing.resolve({});
+
+    await expect(closing).resolves.toBe('cancelled');
+    // Not one publish after the wipe.
+    expect(importStore.getState()).toEqual(importStore.getInitialState());
+  });
+
+  it('is cancelled when the job was discarded before it got the gate', async () => {
+    await readyBlockedByOther();
+
+    // Both are queued member actions, so they SERIALIZE: the close waits for
+    // the discard, and by the time it runs there is no job to re-price.
+    const discarding = discardImportPreflight();
+    const closing = closeOtherImport();
+    await discarding;
+
+    await expect(closing).resolves.toBe('cancelled');
+    expect(getImportJob(JOB)).toBeNull();
+    // Nothing of the member's was closed on the way out.
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+  });
+
+  it('never closes the other session from a refused archive (PR #997 blocker)', async () => {
+    // Over this source's allowance AND the other source has a session open:
+    // the archive is refused on its own facts, so closing the other import
+    // would stop it for nothing. The refused job sits at phase `ready` with
+    // its row already `cancelled` — exactly the state the gate must reject.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({
+        allowances: allowances({ facebook: allowance(999) }),
+        openImport: openImport({ importId: OTHER_ID, source: 'instagram' }),
+      }),
+    );
+    parseEmitting(2);
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    const preflight = importStore.getState().preflight;
+    expect(importStore.getState().phase).toBe('ready');
+    expect(preflight?.overAllowance).toBe('posts');
+    expect(preflight?.otherOpenImport).toEqual({ importId: OTHER_ID });
+
+    await expect(closeOtherImport()).resolves.toBe('cancelled');
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+  });
+
+  it('never reports a landed close as a no-op when the job vanished meanwhile', async () => {
+    await readyBlockedByOther();
+    const completing = deferred<unknown>();
+    mockCompleteImport.mockImplementation(() => completing.promise);
+    mockGetGroupImports.mockResolvedValue(groupImports());
+
+    const closing = closeOtherImport();
+    await drain();
+    // Same account, but the job is gone by the time the close lands.
+    finishImportJob(JOB, 'cancelled');
+    completing.resolve({});
+
+    await expect(closing).resolves.toBe('closed-stale');
+    expect(mockCompleteImport).toHaveBeenCalledWith(OTHER_ID);
+  });
+
+  it('does nothing at all when the phase is not ready', async () => {
+    seedJob({ items: 1 });
+    await resumeImportAtLaunch();
+    await drain();
+
+    await expect(closeOtherImport()).resolves.toBe('cancelled');
+    expect(mockCompleteImport).not.toHaveBeenCalledWith(OTHER_ID);
+  });
+
+  it('does nothing when there is no other import to close', async () => {
+    seedJob({ status: 'ready', items: 1 });
+    await resumeImportAtLaunch();
+    expect(importStore.getState().preflight?.otherOpenImport).toBeNull();
+
+    await expect(closeOtherImport()).resolves.toBe('cancelled');
+    expect(mockCompleteImport).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// Group: the summary knows its source, and what else was in the files (#996)
+// ===========================================================================
+
+describe('the summary source and other-source hint', () => {
+  it('carries the run source and the hint from the parse', async () => {
+    mockOpenArchiveSession.mockImplementation(async () => bothSourcesArchiveSession());
+    parseEmitting(1, { otherSourceDetected: true });
+    await pickAndStartParse({
+      conversationId: ORBIT,
+      chooseSource: jest.fn().mockResolvedValue('instagram'),
+    });
+    await confirmAndRunImport();
+    await drain();
+
+    const summary = importStore.getState().summary;
+    expect(summary?.source).toBe('instagram');
+    // The summary is where #996 offers the second import, so it has to know
+    // there IS one.
+    expect(summary?.otherSourceDetected).toBe(true);
+  });
+
+  it('re-detects the hint from the archive on a resumed run', async () => {
+    // Launch-resumed: no `ParseSummary` survives, so the open archive is the
+    // only thing that still knows.
+    seedJob({ items: 1, bookmark: ['part-a'], mediaEntryIds: ['entry-0-0'] });
+    mockOpenArchiveSession.mockImplementation(async () => bothSourcesArchiveSession());
+
+    await confirmAndRunLaunch();
+
+    expect(importStore.getState().preflight?.summary ?? null).toBeNull();
+    expect(importStore.getState().summary?.otherSourceDetected).toBe(true);
+  });
+
+  it('is false when the archive holds only our own source', async () => {
+    parseEmitting(1);
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    await confirmAndRunImport();
+    await drain();
+
+    expect(importStore.getState().summary?.source).toBe('facebook');
+    expect(importStore.getState().summary?.otherSourceDetected).toBe(false);
+  });
+
+  it('is false for a text-only resumed run, which has nothing left to ask', async () => {
+    // The documented caveat: no archive was opened (every item is text) and
+    // no `ParseSummary` survived the relaunch.
+    seedJob({ items: 1 });
+
+    await confirmAndRunLaunch();
+
+    expect(importStore.getState().summary?.otherSourceDetected).toBe(false);
+    expect(importStore.getState().summary?.source).toBe('facebook');
   });
 });

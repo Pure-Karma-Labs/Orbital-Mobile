@@ -42,10 +42,17 @@ import type {
 /**
  * POST /api/groups/:groupId/imports — open a session.
  *
- * Both declared values are REQUIRED and reserve against the orbit's quota.
+ * All THREE body fields are REQUIRED since B#352. The declared values reserve
+ * against the orbit's quota; `source` names the allowance bucket this session
+ * spends and binds the session to that platform for its lifetime. An omitted
+ * or unknown source is 400 `IMPORT_DECLARED_INVALID` — the server validates it
+ * before the service runs, so a bad value never creates an allowance row.
+ *
  * 409 `IMPORT_REFUSED` with `IMPORT_IN_PROGRESS` (one open session per member
- * per orbit), `IMPORT_ALLOWANCE_EXCEEDED` or `IMPORT_QUOTA_EXCEEDED` — all
- * thrown inside the transaction, so a refusal creates NO session.
+ * per orbit ACROSS sources — its details carry `{import_id, source}`, or
+ * neither on the insert race), `IMPORT_ALLOWANCE_EXCEEDED` (that source's
+ * bucket) or `IMPORT_QUOTA_EXCEEDED` (the orbit's, shared) — all thrown
+ * inside the transaction, so a refusal creates NO session.
  */
 export function startImport(
   groupId: string,
@@ -62,9 +69,14 @@ export function startImport(
 /**
  * GET /api/groups/:groupId/imports — the preflight.
  *
- * Read-only: the lifetime allowance, the caller's open session if any, and the
- * server's advertised limits. This is also the availability probe (see the
- * flag-gate note above).
+ * Read-only: BOTH sources' lifetime allowances (`allowances`, always both
+ * keys, zeros where no row exists), the caller's open session if any — of
+ * EITHER source, so read its `source` before adopting it — and the server's
+ * advertised limits. There is no flat `allowance` key since B#352.
+ *
+ * This is also the availability probe (see the flag-gate note above); a
+ * response with no `allowances` map is an older server, which the caller
+ * treats as unavailable rather than pricing an import it cannot.
  */
 export function getGroupImports(groupId: string): Promise<GroupImportsResponse> {
   return request<GroupImportsResponse>({
@@ -77,7 +89,10 @@ export function getGroupImports(groupId: string): Promise<GroupImportsResponse> 
 /**
  * GET /api/imports/:importId — one session, in any status.
  *
- * Owner-only; a session belonging to another user is a 404, not a 403.
+ * Owner-only; a session belonging to another user is a 404, not a 403. Its
+ * `source` is the session's own, and `allowance` is that source's bucket — a
+ * session of the other source is still the caller's, so the id alone does not
+ * make it adoptable.
  */
 export function getImportSession(importId: string): Promise<ImportSessionResponse> {
   return request<ImportSessionResponse>({

@@ -118,6 +118,9 @@ const ALLOWANCE = {
   bytes_limit: 2_147_483_648,
 };
 
+/** A canonical lowercase UUIDv4, the only shape an import id may take. */
+const ID_OK = '5c2e4bd2-7c4f-4071-8d2f-0b1a2c3d4e5f';
+
 describe('ConflictError.importRefusal', () => {
   it('carries IMPORT_IN_PROGRESS with the session to resume', () => {
     const id = '5c2e4bd2-7c4f-4071-8d2f-0b1a2c3d4e5f';
@@ -125,9 +128,42 @@ describe('ConflictError.importRefusal', () => {
     expect(e.importRefusal).toEqual({ code: 'IMPORT_IN_PROGRESS', importId: id });
   });
 
-  it('carries IMPORT_IN_PROGRESS with no id (the 23505 insert race)', () => {
+  it('carries IMPORT_IN_PROGRESS with the session AND its source', () => {
+    const id = '5c2e4bd2-7c4f-4071-8d2f-0b1a2c3d4e5f';
+    const e = new ConflictError(
+      refusalBody('IMPORT_IN_PROGRESS', { import_id: id, source: 'instagram' }),
+    );
+    // There is one open session per member per orbit ACROSS sources (B#352),
+    // so the source is what decides whether the runner may adopt it.
+    expect(e.importRefusal).toEqual({
+      code: 'IMPORT_IN_PROGRESS',
+      importId: id,
+      source: 'instagram',
+    });
+  });
+
+  it('carries IMPORT_IN_PROGRESS with NEITHER field (the 23505 insert race)', () => {
     const e = new ConflictError(refusalBody('IMPORT_IN_PROGRESS'));
+    // The server looks the winning session up and sends `{}` when it has
+    // already gone. An absent source reads as foreign downstream, which is
+    // the fail-closed direction.
     expect(e.importRefusal).toEqual({ code: 'IMPORT_IN_PROGRESS' });
+  });
+
+  it('drops a source that is not one of the two literals', () => {
+    for (const source of ['Facebook', 'threads', '', 7, null, { source: 'facebook' }]) {
+      const e = new ConflictError(refusalBody('IMPORT_IN_PROGRESS', { import_id: ID_OK, source }));
+      // Omitted, never carried through as a string: nothing downstream may
+      // branch on a spelling this build does not know.
+      expect(e.importRefusal).toEqual({ code: 'IMPORT_IN_PROGRESS', importId: ID_OK });
+    }
+  });
+
+  it('carries the source on an allowance refusal too', () => {
+    const e = new ConflictError(
+      refusalBody('IMPORT_ALLOWANCE_EXCEEDED', { allowance: ALLOWANCE, source: 'facebook' }),
+    );
+    expect(e.importRefusal?.source).toBe('facebook');
   });
 
   it('carries IMPORT_ALLOWANCE_EXCEEDED with the allowance, camelCased', () => {

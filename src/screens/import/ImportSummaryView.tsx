@@ -14,28 +14,38 @@ import React from 'react';
 import { Text, View, type TextStyle, type ViewStyle } from 'react-native';
 import { useTheme } from '../../theme';
 import { Button } from '../../components/Button';
+import { OTHER_IMPORT_SOURCE } from '../../services/metaImport/types';
 import {
   DONE_LABEL,
   SEE_UNMIGRATED_PAST_LABEL,
+  describeImportOtherLabel,
+  describeOtherSourceOffer,
   describeSummaryHeadline,
   describeSummaryLines,
 } from './importCopy';
 
 import type { ImportPreflight, ImportSummary } from '../../services/metaImport/importRunner';
+import type { ImportSource } from '../../services/metaImport/types';
 
 export interface ImportSummaryViewProps {
   summary: ImportSummary;
   /** The run's own preflight, when it is still in hand: it carries retention. */
   preflight: ImportPreflight | null;
+  /** A second import is being started from here; Done waits for it. */
+  busy: boolean;
   onSeeUnmigrated: () => void;
   onDone: () => void;
+  /** Start the other source from the same export files (#996). */
+  onImportOther: (other: ImportSource) => void;
 }
 
 export function ImportSummaryView({
   summary,
   preflight,
+  busy,
   onSeeUnmigrated,
   onDone,
+  onImportOther,
 }: ImportSummaryViewProps): React.JSX.Element {
   const theme = useTheme();
 
@@ -98,8 +108,28 @@ export function ImportSummaryView({
         </Text>
       )}
 
+      {/*
+        The offer, for all three summary kinds (#996): one job is one source,
+        so the other half of the same export is a second import — and the
+        member has the files open on their device right now.
+      */}
+      {summary.otherSourceDetected && (
+        <React.Fragment>
+          <Text style={bodyStyle} testID="import-other-source-offer">
+            {describeOtherSourceOffer(summary.source)}
+          </Text>
+          <View style={gapStyle} />
+          <Button
+            title={describeImportOtherLabel(OTHER_IMPORT_SOURCE[summary.source])}
+            onPress={() => onImportOther(OTHER_IMPORT_SOURCE[summary.source])}
+            disabled={busy}
+            testID="import-other-source"
+          />
+        </React.Fragment>
+      )}
+
       <View style={gapStyle} />
-      <Button title={DONE_LABEL} onPress={onDone} testID="import-summary-done" />
+      <Button title={DONE_LABEL} onPress={onDone} disabled={busy} testID="import-summary-done" />
     </View>
   );
 }

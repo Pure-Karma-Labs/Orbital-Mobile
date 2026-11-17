@@ -81,8 +81,16 @@ true satisfies ComposeRoutesShareParams;
  * `ImportHowTo` carries its orbit because the member can switch the active
  * orbit underneath it; the screen must keep importing into the orbit they
  * started from, never into `activeConversationId`.
+ *
+ * It no longer carries the SOURCE (#996). The source is detected from the
+ * archive, so the member picks files first and is asked which platform only
+ * when an export holds both. `preferredSource` is the one exception: the
+ * "import the other one" offers set it, and it pre-answers that question.
  */
-export type ImportHowToParams = { source: ImportSource; conversationId: string };
+export type ImportHowToParams = {
+  conversationId: string;
+  preferredSource?: ImportSource;
+};
 
 export type SettingsStackParamList = {
   SettingsMain: undefined;

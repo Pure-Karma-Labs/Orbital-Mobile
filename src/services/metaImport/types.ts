@@ -20,6 +20,20 @@
 export type ImportSource = 'facebook' | 'instagram';
 
 /**
+ * The OTHER source — the one an import of `source` did not take.
+ *
+ * A total `Record`, not a ternary: #996 reads "the other one" from the runner
+ * (the summary's re-detection), from the copy module (every "import the other
+ * one" string) and from the screens, and three private ternaries is three
+ * places for a third source to be forgotten. Adding one to {@link ImportSource}
+ * breaks this exhaustively, which is the point.
+ */
+export const OTHER_IMPORT_SOURCE: Readonly<Record<ImportSource, ImportSource>> = Object.freeze({
+  facebook: 'instagram',
+  instagram: 'facebook',
+});
+
+/**
  * Why one post was not imported.
  *
  * The first six are the media holds (#983's hold obligation): a post whose

@@ -40,13 +40,24 @@ import {
 import { ImportStatusScreen } from '../ImportStatusScreen';
 import {
   BLOCKED_COPY,
+  CLOSE_OTHER_CONFIRM_BODY,
+  CLOSE_OTHER_CONFIRM_LABEL,
+  CLOSE_OTHER_FAILED_COPY,
+  CLOSE_OTHER_KEEP_LABEL,
   DIFFERENT_ARCHIVE_CHOOSE_LABEL,
   DIFFERENT_ARCHIVE_DISMISS_LABEL,
   NO_IMPORT_COPY,
   PAUSE_COPY,
   STALLED_COPY,
   STOP_IMPORT_LABEL,
+  describeCloseOtherConfirmTitle,
+  describeCloseOtherLabel,
+  describeCloseOtherStale,
+  describeImportOtherInsteadLabel,
+  describeImportOtherLabel,
   describeMediaProgress,
+  describeOtherImportOpen,
+  describeOtherSourceOffer,
   describePauseTitle,
   describeRunProgress,
   describeSummaryHeadline,
@@ -58,7 +69,7 @@ import type {
   ImportSummary,
   PauseCause,
 } from '../../../services/metaImport/importRunner';
-import type { SkipReason } from '../../../services/metaImport/types';
+import type { ParseSummary, SkipReason } from '../../../services/metaImport/types';
 import type { ImportRunnerState } from '../../../services/metaImport/importRunner';
 
 // ---------------------------------------------------------------------------
@@ -133,11 +144,24 @@ jest.mock('../../../services/metaImport/importRunner', () => {
     resumeImport: jest.fn(),
     resumeImportAtLaunch: jest.fn(),
     discardImportPreflight: jest.fn(),
+    closeOtherImport: jest.fn(),
+    // The REAL predicate, not a jest.fn: it is a pure two-line function over
+    // the preflight, and a stub would let the view's `disabled` wiring pass
+    // while disagreeing with the runner about what can start.
+    canStartFromPreflight: (preflight: {
+      overAllowance: unknown;
+      nothingToImport: boolean;
+      otherOpenImport: unknown;
+    }) =>
+      preflight.overAllowance === null &&
+      !preflight.nothingToImport &&
+      preflight.otherOpenImport === null,
   };
 });
 
 import {
   cancelImport,
+  closeOtherImport,
   confirmAndRunImport,
   dismissImportSummary,
   importStore,
@@ -152,6 +176,7 @@ const mockDismiss = dismissImportSummary as jest.Mock;
 const mockRepick = repickArchiveParts as jest.Mock;
 const mockResume = resumeImport as jest.Mock;
 const mockResumeAtLaunch = resumeImportAtLaunch as jest.Mock;
+const mockCloseOther = closeOtherImport as jest.Mock;
 
 const mockDiscard = (
   jest.requireMock('../../../services/metaImport/importRunner') as {
@@ -199,6 +224,8 @@ const LIMITS = {
 
 const RUNNABLE_PREFLIGHT: ImportPreflight = {
   summary: null,
+  source: 'facebook' as const,
+  otherOpenImport: null,
   allowance: ALLOWANCE,
   limits: LIMITS,
   contentRetentionDays: null,
@@ -221,6 +248,8 @@ const NOTHING_PREFLIGHT: ImportPreflight = {
 };
 
 const COMPLETED_SUMMARY: ImportSummary = {
+  source: 'facebook' as const,
+  otherSourceDetected: false,
   created: 12,
   duplicate: 1,
   failed: 0,
@@ -355,6 +384,12 @@ beforeEach(() => {
   mockDiscard.mockResolvedValue(undefined);
   mockRepick.mockResolvedValue('resumed');
   mockResumeAtLaunch.mockResolvedValue(undefined);
+  mockCloseOther.mockResolvedValue('closed');
+  // `clearAllMocks` clears CALLS, not implementations, so a test that gives
+  // the dismiss a store-resetting body would otherwise leak it into the next
+  // one. Restated here rather than switched to `resetAllMocks`, which would
+  // also throw away the resolved values above.
+  mockDismiss.mockImplementation(() => {});
   alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
 });
 
@@ -985,7 +1020,7 @@ describe('ImportStatusScreen — re-pick', () => {
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
-  it('carries the orbit and source the store held BEFORE the re-pick', async () => {
+  it('carries the orbit the store held BEFORE the re-pick, and no source', async () => {
     mockRepick.mockResolvedValue('different-archive');
     const renderer = renderRepick();
 
@@ -994,17 +1029,16 @@ describe('ImportStatusScreen — re-pick', () => {
     expect(alertSpy).toHaveBeenCalledTimes(1);
 
     // A different archive resets the runner to idle. Reading the store now
-    // would hand the replace two nulls — which is exactly why the handler read
-    // them before the call.
+    // would hand the replace a null orbit — which is exactly why the handler
+    // read it before the call.
     setState({ phase: 'idle', jobId: null, source: null, conversationId: null });
 
     pressAlertButton((button) => button.text === DIFFERENT_ARCHIVE_CHOOSE_LABEL);
 
     expect(mockReplace).toHaveBeenCalledTimes(1);
-    expect(mockReplace).toHaveBeenCalledWith('ImportHowTo', {
-      source: 'facebook',
-      conversationId: 'g1',
-    });
+    // No SOURCE (#996): the fresh pick detects it from the files.
+    expect(mockReplace).toHaveBeenCalledWith('ImportHowTo', { conversationId: 'g1' });
+    expect(mockReplace.mock.calls[0][1]).not.toHaveProperty('source');
   });
 
   it('dismisses back to Settings from the alert without re-picking', async () => {
@@ -1080,5 +1114,378 @@ describe('ImportStatusScreen — summary', () => {
     expect(hasHostTestId(renderer.root, 'import-see-unmigrated')).toBe(false);
     // Positive control: the summary itself rendered.
     expect(hasHostTestId(renderer.root, 'import-summary-done')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The OTHER source's open import (#996 §2)
+//
+// One open session per member per orbit ACROSS sources, so a stale one — a
+// reset with no `/complete`, a reinstall, another device — blocks this
+// preflight. The parsed job is untouched, which is why the way out is a Close
+// button rather than a dead end.
+// ---------------------------------------------------------------------------
+
+const BLOCKED_PREFLIGHT: ImportPreflight = {
+  ...RUNNABLE_PREFLIGHT,
+  otherOpenImport: { importId: 'other-import-1' },
+};
+
+describe('ImportStatusScreen — the other source is still open', () => {
+  function renderBlockedPreflight(): ReactTestRenderer {
+    store.setState({
+      phase: 'ready',
+      jobId: 'job-1',
+      conversationId: 'g1',
+      source: 'facebook',
+      preflight: BLOCKED_PREFLIGHT,
+    });
+    return renderScreen();
+  }
+
+  it('explains itself and refuses to start', () => {
+    const renderer = renderBlockedPreflight();
+    const root = renderer.root;
+
+    expect(String(findHostByTestId(root, 'import-other-open-notice').props.children)).toBe(
+      describeOtherImportOpen('facebook'),
+    );
+    // Named by the OTHER platform, which is the one that has to be closed.
+    expect(controlProps(root, 'import-close-other').title).toBe(
+      describeCloseOtherLabel('facebook'),
+    );
+    expect(controlProps(root, 'import-confirm').disabled).toBe(true);
+    // Walking away is never blocked.
+    expect(controlProps(root, 'import-discard').disabled).toBe(false);
+  });
+
+  it('shows neither notice nor Close on an ordinary preflight', () => {
+    setState({ phase: 'ready', jobId: 'job-1', preflight: RUNNABLE_PREFLIGHT });
+    const renderer = renderScreen();
+
+    expect(hasHostTestId(renderer.root, 'import-other-open-notice')).toBe(false);
+    expect(hasHostTestId(renderer.root, 'import-close-other')).toBe(false);
+    expect(controlProps(renderer.root, 'import-confirm').disabled).toBe(false);
+  });
+
+  it.each([
+    ['refused', { ...BLOCKED_PREFLIGHT, overAllowance: 'posts' as const }],
+    ['nothing', { ...BLOCKED_PREFLIGHT, importable: 0, nothingToImport: true }],
+  ])(
+    'offers neither notice nor Close on a %s archive, which the other import does not block',
+    (_kind, preflight) => {
+      setState({ phase: 'ready', jobId: 'job-1', conversationId: 'g1', preflight });
+      const renderer = renderScreen();
+
+      expect(hasHostTestId(renderer.root, 'import-other-open-notice')).toBe(false);
+      expect(hasHostTestId(renderer.root, 'import-close-other')).toBe(false);
+    },
+  );
+
+  it('puts a confirm in front of the close, and only then closes', () => {
+    const renderer = renderBlockedPreflight();
+    const root = renderer.root;
+
+    tap(root, 'import-close-other');
+
+    // The session may still be RUNNING on another device, which this one
+    // cannot see — so the member is told before anything happens.
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0][0]).toBe(describeCloseOtherConfirmTitle('facebook'));
+    expect(alertSpy.mock.calls[0][1]).toBe(CLOSE_OTHER_CONFIRM_BODY);
+    expect(mockCloseOther).not.toHaveBeenCalled();
+
+    pressAlertButton((button) => button.text === CLOSE_OTHER_KEEP_LABEL);
+    expect(mockCloseOther).not.toHaveBeenCalled();
+
+    tap(root, 'import-close-other');
+    pressAlertButton((button) => button.text === CLOSE_OTHER_CONFIRM_LABEL);
+    expect(mockCloseOther).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the button busy, and Import disabled, while the close runs', () => {
+    mockCloseOther.mockReturnValue(new Promise<string>(() => {}));
+    const renderer = renderBlockedPreflight();
+    const root = renderer.root;
+
+    tap(root, 'import-close-other');
+    pressAlertButton((button) => button.text === CLOSE_OTHER_CONFIRM_LABEL);
+
+    expect(controlProps(root, 'import-close-other').loading).toBe(true);
+    expect(controlProps(root, 'import-confirm').disabled).toBe(true);
+
+    // A second tap neither re-asks nor re-closes.
+    tap(root, 'import-close-other');
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(mockCloseOther).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The latch is FINALLY-ONLY by nature: a successful close re-prices the
+   * preflight in place, so the signature — phase, job, summary — never moves.
+   * Only the promise settling can give the button back, which is why every
+   * outcome is checked rather than the happy one.
+   */
+  it.each(['closed', 'closed-stale', 'failed', 'cancelled'] as const)(
+    'returns the button on a %s result',
+    async (outcome) => {
+      mockCloseOther.mockResolvedValue(outcome);
+      const renderer = renderBlockedPreflight();
+      const root = renderer.root;
+
+      tap(root, 'import-close-other');
+      await act(async () => {
+        alertButtons()
+          .find((button) => button.text === CLOSE_OTHER_CONFIRM_LABEL)
+          ?.onPress?.();
+      });
+
+      expect(store.getState().preflight).toBe(BLOCKED_PREFLIGHT);
+      expect(controlProps(root, 'import-close-other').loading).toBe(false);
+    },
+  );
+
+  it('shows an error banner only when the close actually failed', async () => {
+    mockCloseOther.mockResolvedValue('failed');
+    const renderer = renderBlockedPreflight();
+    const root = renderer.root;
+
+    tap(root, 'import-close-other');
+    await act(async () => {
+      alertButtons()
+        .find((button) => button.text === CLOSE_OTHER_CONFIRM_LABEL)
+        ?.onPress?.();
+    });
+
+    expect(hasHostTestId(root, 'import-close-other-error')).toBe(true);
+    expect(renderedText(root)).toContain(CLOSE_OTHER_FAILED_COPY);
+    expect(hasHostTestId(root, 'import-close-other-stale')).toBe(false);
+  });
+
+  /**
+   * `closed-stale` is the honest middle: the other session IS closed, only the
+   * re-price failed. An error banner would tell the member to retry something
+   * that already worked.
+   */
+  it('reports a stale close as information, not an error', async () => {
+    mockCloseOther.mockResolvedValue('closed-stale');
+    const renderer = renderBlockedPreflight();
+    const root = renderer.root;
+
+    tap(root, 'import-close-other');
+    await act(async () => {
+      alertButtons()
+        .find((button) => button.text === CLOSE_OTHER_CONFIRM_LABEL)
+        ?.onPress?.();
+    });
+
+    expect(String(findHostByTestId(root, 'import-close-other-stale').props.children)).toBe(
+      describeCloseOtherStale('facebook'),
+    );
+    expect(hasHostTestId(root, 'import-close-other-error')).toBe(false);
+    // Import stays disabled: the allowance on screen is still the old one.
+    expect(controlProps(root, 'import-confirm').disabled).toBe(true);
+    // …and re-tapping is safe, because `/complete` is idempotent.
+    expect(controlProps(root, 'import-close-other').loading).toBe(false);
+  });
+
+  it('leaves nothing on screen when the close worked', async () => {
+    mockCloseOther.mockResolvedValue('closed');
+    const renderer = renderBlockedPreflight();
+    const root = renderer.root;
+
+    tap(root, 'import-close-other');
+    await act(async () => {
+      alertButtons()
+        .find((button) => button.text === CLOSE_OTHER_CONFIRM_LABEL)
+        ?.onPress?.();
+    });
+
+    expect(hasHostTestId(root, 'import-close-other-error')).toBe(false);
+    expect(hasHostTestId(root, 'import-close-other-stale')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "Import the other one" (#996)
+//
+// One job is one source, so the other half of the same export is a second
+// import — and the member has those files on their device right now.
+// ---------------------------------------------------------------------------
+
+const BOTH_SOURCES_SUMMARY: ImportSummary = { ...COMPLETED_SUMMARY, otherSourceDetected: true };
+
+/** A parse that saw both platforms, for the refusal views' "instead" offer. */
+const BOTH_SOURCES_PARSE: ParseSummary = {
+  importable: 0,
+  importableMedia: 0,
+  skipped: NO_SKIPS,
+  earliestDate: null,
+  latestDate: null,
+  fileIssues: [],
+  idScheme: { fbid: 0, content: 0 },
+  otherSourceDetected: true,
+  locationDataRemoved: false,
+};
+
+describe('ImportStatusScreen — importing the other source', () => {
+  function renderSummaryOffer(summary: ImportSummary = BOTH_SOURCES_SUMMARY): ReactTestRenderer {
+    store.setState({
+      phase: 'done',
+      jobId: 'job-1',
+      conversationId: 'g1',
+      source: 'facebook',
+      summary,
+    });
+    return renderScreen();
+  }
+
+  it('offers the other source on a settled summary', () => {
+    const renderer = renderSummaryOffer();
+    const root = renderer.root;
+
+    expect(String(findHostByTestId(root, 'import-other-source-offer').props.children)).toBe(
+      describeOtherSourceOffer('facebook'),
+    );
+    expect(controlProps(root, 'import-other-source').title).toBe(
+      describeImportOtherLabel('instagram'),
+    );
+  });
+
+  it('offers nothing when the export held only this source', () => {
+    const renderer = renderSummaryOffer(COMPLETED_SUMMARY);
+    expect(hasHostTestId(renderer.root, 'import-other-source-offer')).toBe(false);
+    expect(hasHostTestId(renderer.root, 'import-other-source')).toBe(false);
+  });
+
+  it.each([
+    ['cancelled', { ...CANCELLED_SUMMARY, otherSourceDetected: true }],
+    ['failed', { ...FAILED_SUMMARY, otherSourceDetected: true }],
+  ])('offers it on a %s summary too', (_name, summary) => {
+    const renderer = renderSummaryOffer(summary as ImportSummary);
+    expect(hasHostTestId(renderer.root, 'import-other-source')).toBe(true);
+  });
+
+  /**
+   * The capture is the whole subtlety: `dismissImportSummary` resets the store
+   * to INITIAL_STATE, which NULLS `conversationId`. Reading it after the
+   * dismiss would navigate with nothing.
+   */
+  it('dismisses first, then replaces with the orbit it captured', () => {
+    const renderer = renderSummaryOffer();
+
+    tap(renderer.root, 'import-other-source');
+
+    expect(mockDismiss).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledWith('ImportHowTo', {
+      conversationId: 'g1',
+      preferredSource: 'instagram',
+    });
+    expect(mockDismiss.mock.invocationCallOrder[0]).toBeLessThan(
+      mockReplace.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('replaces exactly once on a double tap, and never with a null orbit', () => {
+    const renderer = renderSummaryOffer();
+    const root = renderer.root;
+
+    // The real dismiss nulls the store; this one does too, so the second tap
+    // meets the same world the member's second tap would — including the
+    // button being gone from the tree, which is why the handler is captured
+    // from the FIRST render and called twice.
+    mockDismiss.mockImplementation(() => {
+      store.setState({ ...BASE_STATE }, true);
+    });
+    const press = (findByTestId(root, 'import-other-source').props as { onPress: () => void })
+      .onPress;
+
+    act(() => {
+      press();
+      press();
+    });
+
+    expect(mockReplace).toHaveBeenCalledTimes(1);
+    expect(mockReplace.mock.calls[0][1]).toEqual({
+      conversationId: 'g1',
+      preferredSource: 'instagram',
+    });
+  });
+
+  it('disables Done while the second import is starting', () => {
+    const renderer = renderSummaryOffer();
+    const root = renderer.root;
+
+    expect(controlProps(root, 'import-summary-done').disabled).toBe(false);
+    tap(root, 'import-other-source');
+    expect(controlProps(root, 'import-summary-done').disabled).toBe(true);
+  });
+
+  it.each([
+    ['refused', { ...REFUSED_PREFLIGHT, summary: BOTH_SOURCES_PARSE }],
+    ['nothing', { ...NOTHING_PREFLIGHT, summary: BOTH_SOURCES_PARSE }],
+  ])('offers "instead" from a %s preflight, discarding first', async (_name, preflight) => {
+    store.setState({
+      phase: 'ready',
+      jobId: 'job-1',
+      conversationId: 'g1',
+      source: 'facebook',
+      preflight: preflight as ImportPreflight,
+    });
+    const renderer = renderScreen();
+    const root = renderer.root;
+
+    expect(controlProps(root, 'import-other-instead').title).toBe(
+      describeImportOtherInsteadLabel('instagram'),
+    );
+
+    await tapAndSettle(root, 'import-other-instead');
+
+    expect(mockDiscard).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledWith('ImportHowTo', {
+      conversationId: 'g1',
+      preferredSource: 'instagram',
+    });
+    expect(mockDiscard.mock.invocationCallOrder[0]).toBeLessThan(
+      mockReplace.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('shows no "instead" offer when the export held only this source', () => {
+    store.setState({
+      phase: 'ready',
+      jobId: 'job-1',
+      conversationId: 'g1',
+      source: 'facebook',
+      preflight: REFUSED_PREFLIGHT,
+    });
+    const renderer = renderScreen();
+    expect(hasHostTestId(renderer.root, 'import-other-instead')).toBe(false);
+  });
+
+  it('replaces exactly once when "instead" is double-tapped', async () => {
+    store.setState({
+      phase: 'ready',
+      jobId: 'job-1',
+      conversationId: 'g1',
+      source: 'facebook',
+      preflight: { ...REFUSED_PREFLIGHT, summary: BOTH_SOURCES_PARSE },
+    });
+    const renderer = renderScreen();
+    const root = renderer.root;
+
+    await act(async () => {
+      (findByTestId(root, 'import-other-instead').props as { onPress: () => void }).onPress();
+      (findByTestId(root, 'import-other-instead').props as { onPress: () => void }).onPress();
+    });
+
+    expect(mockDiscard).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledTimes(1);
+    expect(mockReplace.mock.calls[0][1]).toEqual({
+      conversationId: 'g1',
+      preferredSource: 'instagram',
+    });
   });
 });

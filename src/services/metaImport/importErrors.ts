@@ -59,6 +59,7 @@ import { classifyImportCryptoError } from '../crypto/importCrypto';
 import { UPLOAD_CANCELLED_MESSAGE } from '../media/uploadCancellation';
 
 import type { ArchiveErrorCode } from './archiveAccess';
+import type { ImportSource } from './types';
 
 // ---------------------------------------------------------------------------
 // Vocabulary
@@ -143,6 +144,16 @@ export const IMPORT_TERMINAL_CODES = Object.freeze({
   KEY_PENDING: 1,
   NETWORK: 1,
   ORBIT_FULL: 1,
+  /**
+   * The member has an open import of the OTHER source in this orbit (#996).
+   *
+   * Raised by the RUNNER, never by the classifier: the server's refusal is
+   * `IMPORT_IN_PROGRESS` either way, and only the runner knows which source
+   * IT is importing. There is one open session per member per orbit across
+   * sources (B#352), so this is the honest answer to "yours is busy", and
+   * never a reason to adopt or to close the other session unasked.
+   */
+  OTHER_IMPORT_OPEN: 1,
   REFUSED: 1,
   SESSION_CLOSED: 1,
 });
@@ -179,7 +190,19 @@ export type ImportVerdict =
   | { readonly kind: 'park-file' }
   | { readonly kind: 'batch-halve' }
   | { readonly kind: 'session-restart' }
-  | { readonly kind: 'adopt-session'; readonly importId?: string }
+  | {
+      readonly kind: 'adopt-session';
+      readonly importId?: string;
+      /**
+       * The open session's source, when the server named it.
+       *
+       * The classifier stays SOURCE-BLIND: it reports what the refusal said
+       * and the runner compares against its own source. Undefined means the
+       * server did not say — which the runner must treat as foreign, because
+       * adopting an unconfirmed session spends the wrong allowance bucket.
+       */
+      readonly source?: ImportSource;
+    }
   | { readonly kind: 'finish-completed' }
   | { readonly kind: 'job-terminal'; readonly code: ImportTerminalCode };
 
@@ -420,10 +443,18 @@ function refusalVerdict(e: ConflictError, ctx: ImportFailureContext): ImportVerd
   }
 
   switch (refusal.code) {
-    case 'IMPORT_IN_PROGRESS':
-      return refusal.importId === undefined
-        ? { kind: 'adopt-session' }
-        : { kind: 'adopt-session', importId: refusal.importId };
+    case 'IMPORT_IN_PROGRESS': {
+      // Both fields together or neither (B#352's 23505 arm looks the winning
+      // session up and sends `{}` when it has already gone). Each is passed
+      // through only when present, so the runner can tell "not stated" from
+      // "stated and different".
+      const adopt: { kind: 'adopt-session'; importId?: string; source?: ImportSource } = {
+        kind: 'adopt-session',
+      };
+      if (refusal.importId !== undefined) adopt.importId = refusal.importId;
+      if (refusal.source !== undefined) adopt.source = refusal.source;
+      return adopt;
+    }
 
     case 'IMPORT_CLOSED':
       if (refusal.closedStatus === 'abandoned') return { kind: 'session-restart' };

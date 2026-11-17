@@ -19,24 +19,45 @@
 import { SKIP_REASON_CLASS } from '../../../services/metaImport/types';
 import * as copy from '../importCopy';
 import {
+  ACCOUNTS_CENTER_LINK_LABEL,
   ACCOUNTS_CENTER_URL,
   CANCELLED_COPY,
+  CLOSE_OTHER_CONFIRM_BODY,
+  CLOSE_OTHER_CONFIRM_LABEL,
+  CLOSE_OTHER_FAILED_COPY,
+  CLOSE_OTHER_KEEP_LABEL,
   FAILED_ITEM_COPY,
   FILE_ISSUE_COPY,
   FILE_ISSUE_GROUP_HEADER,
+  HOW_TO_STEPS,
+  HOW_TO_TITLE,
+  IMPORT_START_ROW_LABEL,
   NEXT_TRAILER,
   PAUSE_COPY,
   PHOTOS_REDOWNLOAD_NOTE,
   PICK_FAILURE_COPY,
   SHARE_ROW_CAP,
   SKIP_REASON_COPY,
+  SOURCE_CHOICE_BODY,
+  SOURCE_CHOICE_TITLE,
   SOURCE_LABEL,
   SUMMARY_HEADLINE,
   TERMINAL_COPY,
   UNMIGRATED_GROUP_COPY,
   buildUnmigratedShareText,
   deriveImportView,
+  describeAllowanceWarning,
+  describeAllowances,
+  describeCloseOtherConfirmTitle,
+  describeCloseOtherLabel,
+  describeCloseOtherStale,
+  describeImportOtherCaption,
+  describeImportOtherInsteadLabel,
+  describeImportOtherLabel,
   describeMoreFooter,
+  describeOtherImportBlockedSummary,
+  describeOtherImportOpen,
+  describeOtherSourceOffer,
   describeSummaryLines,
   formatCountdown,
   plural,
@@ -119,6 +140,7 @@ const TERMINAL_CODES = unionKeys<ImportTerminalCode>({
   KEY_PENDING: true,
   NETWORK: true,
   ORBIT_FULL: true,
+  OTHER_IMPORT_OPEN: true,
   REFUSED: true,
   SESSION_CLOSED: true,
 });
@@ -184,6 +206,7 @@ const GROUP_KEYS = unionKeys<UnmigratedGroupKey>({
 
 const PICK_FAILURE_REASONS = unionKeys<PickFailureReason>({
   archive: true,
+  no_posts: true,
   key_pending: true,
   network: true,
   other: true,
@@ -242,6 +265,8 @@ function makeParseSummary(over: Partial<ParseSummary> = {}): ParseSummary {
 function makePreflight(over: Partial<ImportPreflight> = {}): ImportPreflight {
   return {
     summary: null,
+    source: 'facebook' as const,
+    otherOpenImport: null,
     allowance: ALLOWANCE,
     limits: LIMITS,
     contentRetentionDays: null,
@@ -259,6 +284,8 @@ function makePreflight(over: Partial<ImportPreflight> = {}): ImportPreflight {
 
 function makeSummary(over: Partial<ImportSummary> = {}): ImportSummary {
   return {
+    source: 'facebook' as const,
+    otherSourceDetected: false,
     created: 12,
     duplicate: 0,
     failed: 0,
@@ -745,11 +772,15 @@ describe('totalUnmigrated', () => {
 
 type CallArgs = readonly unknown[];
 
-const everySummaryWithTerminal: readonly CallArgs[] = TERMINAL_CODES.map((code) => [
-  makeSummary({ errorCode: code, created: 3, notSubmitted: 2 }),
-  makePreflight({ contentRetentionDays: 30 }),
-  NOW,
-]);
+// Both sources, because one terminal line (`OTHER_IMPORT_OPEN`) is now
+// source-aware and names the OTHER platform (#996).
+const everySummaryWithTerminal: readonly CallArgs[] = SOURCES.flatMap((source) =>
+  TERMINAL_CODES.map((code) => [
+    makeSummary({ source, errorCode: code, created: 3, notSubmitted: 2 }),
+    makePreflight({ source, contentRetentionDays: 30 }),
+    NOW,
+  ]),
+);
 
 const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
   plural: [
@@ -767,40 +798,45 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
     [makeInput({ phase: 'paused', pauseCauses: ['network'] })],
     [makeInput({ phase: 'done', summary: makeSummary() })],
   ],
-  describeStartRow: SOURCES.map((source) => [source]),
   describeIntoCaption: [['Family'], [null]],
   describeOtherOrbitCaption: [['Family'], [null]],
-  describeHowToIntro: SOURCES.flatMap((source) => [
-    [source, 'Family'],
-    [source, null],
-  ]),
-  describeAllowance: [[0], [1], [988]],
-  describeHowToSteps: SOURCES.map((source) => [source]),
+  // SOURCE-NEUTRAL since #996: one argument, the orbit name. The two-argument
+  // form used to feed `'facebook'` in as the orbit name here, which is how a
+  // stale fixture turned into a brand-audit failure rather than a type error.
+  describeHowToIntro: [['Family'], [null]],
+  describeAllowances: [
+    [0, 0],
+    [1, 1],
+    [988, 1000],
+  ],
+  describeImportOtherCaption: SOURCES.map((source) => [source]),
   describeParseProgress: [
     [0, 0],
     [1, 1],
     [412, 980],
   ],
   describeHeldVideoLine: [[1], [7]],
+  // The source rides on the PREFLIGHT now (#996) — there is no `source`
+  // argument, and no `?? 'facebook'` fallback at the call site to go with it.
   describePreflightLines: SOURCES.flatMap((source) => [
     // Rebuilt at launch: no parse summary at all.
-    [makePreflight(), source, NOW],
-    [makePreflight({ summary: makeParseSummary({ otherSourceDetected: true }) }), source, NOW],
+    [makePreflight({ source }), NOW],
+    [makePreflight({ source, summary: makeParseSummary({ otherSourceDetected: true }) }), NOW],
     [
       makePreflight({
+        source,
         summary: makeParseSummary({ importableMedia: 0, locationDataRemoved: false }),
         contentRetentionDays: 30,
         heldVideo: 5,
         remainingPosts: 13,
       }),
-      source,
       NOW,
     ],
   ]),
-  describeAllowanceWarning: [
-    [1, 5],
-    [0, 12],
-  ],
+  describeAllowanceWarning: SOURCES.flatMap((source) => [
+    [1, 5, source],
+    [0, 12, source],
+  ]),
   describeRetentionLine: [
     [null, NOW],
     [30, NOW],
@@ -809,10 +845,22 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
   describeSkipSummaryLine: [[1], [9]],
   describeFileIssueSummaryLine: [[1], [3]],
   describeImportButton: [[1], [120]],
-  describeRefusal: [
-    [makePreflight({ overAllowance: 'posts' })],
-    [makePreflight({ overAllowance: 'bytes' })],
-  ],
+  // Both sources: the refusal names the platform whose bucket is used up.
+  describeRefusal: SOURCES.flatMap((source) => [
+    [makePreflight({ source, overAllowance: 'posts' })],
+    [makePreflight({ source, overAllowance: 'bytes' })],
+  ]),
+  // The other source's open import, from the preflight notice through to the
+  // settled summary. Every one of them names the OTHER platform, so each is
+  // exercised over both values of `ImportSource` (#996 §3).
+  describeOtherImportOpen: SOURCES.map((source) => [source]),
+  describeCloseOtherLabel: SOURCES.map((source) => [source]),
+  describeCloseOtherConfirmTitle: SOURCES.map((source) => [source]),
+  describeCloseOtherStale: SOURCES.map((source) => [source]),
+  describeOtherImportBlockedSummary: SOURCES.map((source) => [source]),
+  describeOtherSourceOffer: SOURCES.map((source) => [source]),
+  describeImportOtherLabel: SOURCES.map((source) => [source]),
+  describeImportOtherInsteadLabel: SOURCES.map((source) => [source]),
   describeMediaProgress: [[0], [1], [40]],
   describeRunProgress: [
     [0, 12],
@@ -969,6 +1017,12 @@ const BRAND = /facebook|instagram|FaceBook|\bFB\b|\bIG\b|\bInsta\b/;
 const META_LOGIN = /meta log ?in/i;
 const RESUME = /\bresume[sd]?\b/i;
 const ANOTHER_DEVICE = /try another device/i;
+/**
+ * #996 removed the per-platform Settings rows, so no copy may send the member
+ * back to one. The phrase is pinned rather than the rows' absence because the
+ * instruction could reappear in any line this module emits.
+ */
+const CHOOSE_IMPORT_FROM = /choose Import from/i;
 
 /**
  * URLs are the ONE exemption, and it is a RULE rather than a list of export
@@ -1028,6 +1082,21 @@ describe('brand audit (§5)', () => {
     expect(strings.filter((s) => ANOTHER_DEVICE.test(s))).toEqual([]);
   });
 
+  it('never tells the member to "choose Import from" a platform row (#996)', () => {
+    expect(strings.filter((s) => CHOOSE_IMPORT_FROM.test(s))).toEqual([]);
+    // Positive control 1: the #995 line this replaced really would be caught.
+    expect(
+      CHOOSE_IMPORT_FROM.test(
+        'This export also has Instagram posts. To import them, choose Import ' +
+          'from Instagram after this import finishes.',
+      ),
+    ).toBe(true);
+    // Positive control 2: the corpus is not empty of the near-miss — the one
+    // surviving "Import from" is the single entry row's own label.
+    expect(strings).toContain(IMPORT_START_ROW_LABEL);
+    expect(strings.filter((s) => s.includes('Import from'))).toEqual([IMPORT_START_ROW_LABEL]);
+  });
+
   // The audit is only worth its green tick if it would go red on a real
   // violation. Mutating `importCopy.ts` to prove that is not an option here,
   // so the same walk and the same regexes are run over a module shaped like it
@@ -1057,11 +1126,22 @@ describe('brand audit (§5)', () => {
 // ---------------------------------------------------------------------------
 
 describe('§4 copy pins', () => {
-  it('pins all four pick-failure arms', () => {
+  it('pins all five pick-failure arms', () => {
+    // `archive` = the files could not be READ. #996 added "posts" and the
+    // Posts-category hint, because a media-only export reads fine and still
+    // yields nothing.
     expect(PICK_FAILURE_COPY.archive).toBe(
-      "Orbital couldn't read those files. Make sure you picked the ZIP files from Meta, " +
-        'including every part, and that Format was JSON.',
+      "Orbital couldn't read posts from those files. Make sure you picked the ZIP files " +
+        'from Meta, including every part, that Format was JSON, and that Posts was selected.',
     );
+    // DISTINCT arm (#996 §7.2): the files read fine and hold no posts of
+    // either platform, so the ask is a different export, not the same one.
+    expect(PICK_FAILURE_COPY.no_posts).toBe(
+      "Orbital didn't find any Facebook or Instagram posts in those files. In Download " +
+        'your information, make sure Posts was selected and Format was JSON, then pick ' +
+        'every ZIP part.',
+    );
+    expect(PICK_FAILURE_COPY.archive).not.toBe(PICK_FAILURE_COPY.no_posts);
     expect(PICK_FAILURE_COPY.key_pending).toBe(
       "This orbit's encryption key hasn't reached this phone yet. Try again in a minute.",
     );
@@ -1102,6 +1182,237 @@ describe('§4 copy pins', () => {
     expect(plural(2, 'post')).toBe('2 posts');
     expect(plural(0, 'post')).toBe('0 posts');
     expect(plural(2, 'photo', 'photos are')).toBe('2 photos are');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #996 — the single entry point, the chooser, the per-source allowance and the
+// other source's open import. Every string below is pinned against the plan's
+// §3 copy table.
+// ---------------------------------------------------------------------------
+
+describe('#996 copy pins (§3)', () => {
+  it('pins the ONE Settings row label and the how-to title', () => {
+    expect(IMPORT_START_ROW_LABEL).toBe('Import from Facebook or Instagram');
+    expect(HOW_TO_TITLE).toBe('Import posts');
+  });
+
+  it('pins an Accounts Center link label per source', () => {
+    expect(Object.keys(ACCOUNTS_CENTER_LINK_LABEL).sort()).toEqual([...SOURCES].sort());
+    expect(ACCOUNTS_CENTER_LINK_LABEL.facebook).toBe('Open Accounts Center for Facebook');
+    expect(ACCOUNTS_CENTER_LINK_LABEL.instagram).toBe('Open Accounts Center for Instagram');
+  });
+
+  it('pins the how-to steps: seven of them, the first naming both platforms', () => {
+    expect(HOW_TO_STEPS).toHaveLength(7);
+    expect(HOW_TO_STEPS[0]).toBe(
+      'In Facebook or Instagram, open Accounts Center → Your information and ' +
+        'permissions → Download your information, and start a download to your device.',
+    );
+    expect(HOW_TO_STEPS[0]).toContain('Facebook');
+    expect(HOW_TO_STEPS[0]).toContain('Instagram');
+  });
+
+  it('pins the source-neutral intro: one argument, the orbit name', () => {
+    expect(copy.describeHowToIntro('Family')).toBe(
+      "Bring your own Facebook or Instagram posts into Family. You don't sign in to " +
+        'Meta here: you download a copy of your information from Facebook or ' +
+        'Instagram, then pick the files. Orbital reads them on this phone, encrypts ' +
+        'each post and posts it to the orbit at its original date.',
+    );
+    expect(copy.describeHowToIntro(null)).toContain('into this orbit.');
+  });
+
+  it('pins the BOTH-buckets allowance line', () => {
+    expect(describeAllowances(12, 7)).toBe(
+      'You can import 12 more Facebook posts and 7 more Instagram posts into this orbit.',
+    );
+    // A used-up bucket says so without hiding the other one.
+    expect(describeAllowances(0, 1000)).toBe(
+      'You can import 0 more Facebook posts and 1000 more Instagram posts into this orbit.',
+    );
+  });
+
+  it('pins the "import the other one" how-to caption, per source', () => {
+    expect(describeImportOtherCaption('facebook')).toBe(
+      'Choose the same export files again to import your Facebook posts.',
+    );
+    expect(describeImportOtherCaption('instagram')).toBe(
+      'Choose the same export files again to import your Instagram posts.',
+    );
+  });
+
+  it('pins the chooser Alert copy', () => {
+    expect(SOURCE_CHOICE_TITLE).toBe('Which posts first?');
+    expect(SOURCE_CHOICE_BODY).toBe(
+      'This export has Facebook and Instagram posts. Orbital imports one at a time. ' +
+        'You can import the other when this one finishes.',
+    );
+  });
+
+  it('pins the preflight line that replaced "choose Import from"', () => {
+    const lines = copy.describePreflightLines(
+      makePreflight({ summary: makeParseSummary({ otherSourceDetected: true }) }),
+      NOW,
+    );
+    expect(lines).toContain(
+      'This export also has Instagram posts. You can import them after this import finishes.',
+    );
+    const instagram = copy.describePreflightLines(
+      makePreflight({
+        source: 'instagram',
+        summary: makeParseSummary({ otherSourceDetected: true }),
+      }),
+      NOW,
+    );
+    expect(instagram).toContain(
+      'This export also has Facebook posts. You can import them after this import finishes.',
+    );
+  });
+
+  it('pins the per-source preflight allowance line', () => {
+    expect(copy.describePreflightLines(makePreflight({ source: 'instagram' }), NOW)).toContain(
+      'This import is about 42 MB. You can import 990 more Instagram posts and 1.0 GB ' +
+        'of Instagram photos into this orbit.',
+    );
+  });
+
+  it('pins the allowance warning: it names the source and closes its clause', () => {
+    expect(describeAllowanceWarning(3, 5, 'facebook')).toBe(
+      "After this import you'll have room for 3 more Facebook posts in this orbit, " +
+        'but your 5 video posts will need 5 of that room. To leave room for them, ' +
+        'export a smaller date range now.',
+    );
+    expect(describeAllowanceWarning(0, 12, 'instagram')).toBe(
+      "After this import you'll have room for 0 more Instagram posts in this orbit, " +
+        'but your 12 video posts will need 12 of that room. To leave room for them, ' +
+        'export a smaller date range now.',
+    );
+    // The #995 phrasing ended on a dangling "will need 12." — it is gone.
+    expect(describeAllowanceWarning(0, 12, 'instagram')).not.toContain('will need 12. To leave');
+  });
+
+  it('pins the other-source offer and its two buttons', () => {
+    expect(describeOtherSourceOffer('facebook')).toBe('This export also has Instagram posts.');
+    expect(describeOtherSourceOffer('instagram')).toBe('This export also has Facebook posts.');
+    expect(describeImportOtherLabel('instagram')).toBe('Import Instagram posts');
+    expect(describeImportOtherLabel('facebook')).toBe('Import Facebook posts');
+    expect(describeImportOtherInsteadLabel('instagram')).toBe('Import Instagram posts instead');
+    expect(describeImportOtherInsteadLabel('facebook')).toBe('Import Facebook posts instead');
+  });
+
+  it('pins the blocking other-import notice, per source', () => {
+    expect(describeOtherImportOpen('facebook')).toBe(
+      'Your Instagram import in this orbit is still open. Orbital runs one import at ' +
+        'a time, so finish it or close it before importing these Facebook posts.',
+    );
+    expect(describeOtherImportOpen('instagram')).toBe(
+      'Your Facebook import in this orbit is still open. Orbital runs one import at ' +
+        'a time, so finish it or close it before importing these Instagram posts.',
+    );
+  });
+
+  it('pins the Close-the-other-import confirm, its labels and its two failures', () => {
+    expect(describeCloseOtherLabel('facebook')).toBe('Close Instagram import');
+    expect(describeCloseOtherLabel('instagram')).toBe('Close Facebook import');
+    expect(describeCloseOtherConfirmTitle('facebook')).toBe('Close your Instagram import?');
+    expect(describeCloseOtherConfirmTitle('instagram')).toBe('Close your Facebook import?');
+    expect(CLOSE_OTHER_CONFIRM_BODY).toBe(
+      "Posts it already imported stay in the orbit. If it's still running on another " +
+        'device, it stops there. You can pick that export again later to finish it.',
+    );
+    expect(CLOSE_OTHER_KEEP_LABEL).toBe('Keep it');
+    expect(CLOSE_OTHER_CONFIRM_LABEL).toBe('Close import');
+    expect(CLOSE_OTHER_FAILED_COPY).toBe(
+      "Couldn't close the other import. Check your connection and try again.",
+    );
+    // The honest middle: closed, but the reprice GET failed. Not an error.
+    expect(describeCloseOtherStale('facebook')).toBe(
+      'Closed your Instagram import. Your allowance will refresh in a moment. Try ' +
+        'again shortly.',
+    );
+    expect(describeCloseOtherStale('instagram')).toBe(
+      'Closed your Facebook import. Your allowance will refresh in a moment. Try ' +
+        'again shortly.',
+    );
+    expect(describeCloseOtherStale('facebook')).not.toBe(CLOSE_OTHER_FAILED_COPY);
+  });
+
+  it('pins the settled-summary form of the same fact, per source', () => {
+    expect(describeOtherImportBlockedSummary('facebook')).toBe(
+      'Your Instagram import in this orbit is still open, so this Facebook import ' +
+        "couldn't start. Pick the archive again to close it, or finish it first.",
+    );
+    expect(describeOtherImportBlockedSummary('instagram')).toBe(
+      'Your Facebook import in this orbit is still open, so this Instagram import ' +
+        "couldn't start. Pick the archive again to close it, or finish it first.",
+    );
+  });
+
+  it('pins the source-NEUTRAL registry fallback for the same code', () => {
+    expect(TERMINAL_COPY.OTHER_IMPORT_OPEN.detail).toBe(
+      'Another import of yours in this orbit is still open, so this one ' +
+        "couldn't start. Pick the archive again to close it, or finish it first.",
+    );
+    // `none`: the trailers all talk about finishing THIS import.
+    expect(TERMINAL_COPY.OTHER_IMPORT_OPEN.next).toBe('none');
+  });
+
+  it('pins the per-source refusals', () => {
+    expect(
+      copy.describeRefusal(
+        makePreflight({ source: 'instagram', overAllowance: 'posts', remainingPosts: 3 }),
+      ),
+    ).toBe(
+      'This archive has 12 Instagram posts but you can import 3 more Instagram posts ' +
+        'into this orbit. Export a smaller date range from Meta and try again.',
+    );
+    expect(
+      copy.describeRefusal(
+        makePreflight({ source: 'facebook', overAllowance: 'bytes', remainingBytes: 1024 * 1024 }),
+      ),
+    ).toBe(
+      "This archive's Facebook photos come to about 42 MB but you can import 1 MB more " +
+        'Facebook photos into this orbit. Export a smaller date range or a lower media ' +
+        'quality from Meta and try again.',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The one terminal code whose summary line the registry cannot spell
+// ---------------------------------------------------------------------------
+
+describe('describeSummaryLines — OTHER_IMPORT_OPEN', () => {
+  it('uses the SOURCE-AWARE line, never the generic registry detail', () => {
+    for (const source of SOURCES) {
+      const lines = describeSummaryLines(
+        makeSummary({ source, created: 0, errorCode: 'OTHER_IMPORT_OPEN' }),
+        null,
+        NOW,
+      );
+      expect(lines).toContain(describeOtherImportBlockedSummary(source));
+      expect(lines).not.toContain(TERMINAL_COPY.OTHER_IMPORT_OPEN.detail);
+      // The registry entry still exists for callers with no summary in hand —
+      // the two really are different strings, so the assertion above is not
+      // satisfied by them being equal.
+      expect(describeOtherImportBlockedSummary(source)).not.toBe(
+        TERMINAL_COPY.OTHER_IMPORT_OPEN.detail,
+      );
+      // `next: 'none'` ⇒ no trailer is appended under it.
+      for (const action of NEXT_ACTIONS) {
+        const trailer = NEXT_TRAILER[action];
+        if (trailer !== null) expect(lines).not.toContain(trailer);
+      }
+    }
+  });
+
+  it('keeps the registry detail for every OTHER terminal code (the control)', () => {
+    for (const code of TERMINAL_CODES) {
+      if (code === 'OTHER_IMPORT_OPEN') continue;
+      const lines = describeSummaryLines(makeSummary({ created: 0, errorCode: code }), null, NOW);
+      expect(lines).toContain(TERMINAL_COPY[code].detail);
+    }
   });
 });
 

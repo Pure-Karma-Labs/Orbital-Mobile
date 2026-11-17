@@ -41,6 +41,7 @@ import { ImportRunView } from './ImportRunView';
 import { ImportSummaryView } from './ImportSummaryView';
 import {
   cancelImport,
+  closeOtherImport,
   confirmAndRunImport,
   discardImportPreflight,
   dismissImportSummary,
@@ -51,6 +52,10 @@ import {
 } from '../../services/metaImport/importRunner';
 import {
   CHECKING_COPY,
+  CLOSE_OTHER_CONFIRM_BODY,
+  CLOSE_OTHER_CONFIRM_LABEL,
+  CLOSE_OTHER_FAILED_COPY,
+  CLOSE_OTHER_KEEP_LABEL,
   DIFFERENT_ARCHIVE_CHOOSE_LABEL,
   DIFFERENT_ARCHIVE_COPY,
   DIFFERENT_ARCHIVE_DISMISS_LABEL,
@@ -62,9 +67,18 @@ import {
   STOP_IMPORT_CONFIRM_TITLE,
   STOP_IMPORT_LABEL,
   deriveImportView,
+  describeCloseOtherConfirmTitle,
+  describeCloseOtherStale,
 } from './importCopy';
 
 import type { SettingsStackParamList } from '../../navigation/types';
+import type { ImportSource } from '../../services/metaImport/types';
+
+/** What a finished "close the other import" left on screen, if anything. */
+interface CloseNotice {
+  readonly message: string;
+  readonly isError: boolean;
+}
 
 type StatusNavigation = NativeStackNavigationProp<SettingsStackParamList, 'ImportStatus'>;
 
@@ -129,6 +143,15 @@ export function ImportStatusScreen(): React.JSX.Element {
    * and Retry must not be tappable mid-discard.
    */
   const [retrying, latchRetry, unlatchRetry] = useRunLatch(signature);
+  /**
+   * Closing the OTHER source's open import (#996).
+   *
+   * FINALLY-ONLY by nature: a successful close re-prices the preflight in
+   * place, so the signature — phase, job, summary — never moves. Only the
+   * promise settling can give the button back.
+   */
+  const [closing, latchClose, unlatchClose] = useRunLatch(signature);
+  const [closeNotice, setCloseNotice] = useState<CloseNotice | null>(null);
 
   /**
    * The live value of {@link stopping}, for the one guard that runs OUTSIDE a
@@ -141,6 +164,12 @@ export function ImportStatusScreen(): React.JSX.Element {
     stoppingRef.current = stopping;
   }, [stopping]);
 
+  /** Same reason as {@link stoppingRef}: read from inside an Alert button. */
+  const closingRef = useRef(closing);
+  useEffect(() => {
+    closingRef.current = closing;
+  }, [closing]);
+
   /**
    * The two one-shot actions that are NOT covered by a latch, because neither
    * leaves a button on screen to spin: a discard pops the screen, and a
@@ -149,6 +178,13 @@ export function ImportStatusScreen(): React.JSX.Element {
    */
   const discarding = useRef(false);
   const repicking = useRef(false);
+  /**
+   * Starting the OTHER source from a settled summary. Its own one-shot ref,
+   * because it does not share the discard path: the summary is dismissed
+   * rather than discarded.
+   */
+  const importingOther = useRef(false);
+  const [importingOtherBusy, setImportingOtherBusy] = useState(false);
 
   const handleBack = useCallback(() => {
     navigation.goBack();
@@ -240,8 +276,8 @@ export function ImportStatusScreen(): React.JSX.Element {
     if (repicking.current) return;
     repicking.current = true;
     // Captured BEFORE the call: a different archive resets the store to idle,
-    // so reading either of these afterwards would read null.
-    const source = state.source;
+    // so reading this afterwards would read null. The SOURCE is no longer
+    // carried — the fresh pick detects it (#996).
     const conversationId = state.conversationId;
 
     repickArchiveParts()
@@ -252,8 +288,8 @@ export function ImportStatusScreen(): React.JSX.Element {
           {
             text: DIFFERENT_ARCHIVE_CHOOSE_LABEL,
             onPress: () => {
-              if (!mounted.current || source === null || conversationId === null) return;
-              navigation.replace('ImportHowTo', { source, conversationId });
+              if (!mounted.current || conversationId === null) return;
+              navigation.replace('ImportHowTo', { conversationId });
             },
           },
         ]);
@@ -264,12 +300,100 @@ export function ImportStatusScreen(): React.JSX.Element {
         // leave the member on this screen, able to try again.
         repicking.current = false;
       });
-  }, [state.source, state.conversationId, navigation, handleBack]);
+  }, [state.conversationId, navigation, handleBack]);
 
   const handleDone = useCallback(() => {
     dismissImportSummary();
     navigation.goBack();
   }, [navigation]);
+
+  /**
+   * Import the OTHER source from the same export files (#996).
+   *
+   * The capture is the whole subtlety: both exits — `dismissImportSummary`
+   * from a summary, `discardImportPreflight` from a refusal — reset the store
+   * to INITIAL_STATE, which NULLS `conversationId`. Reading it afterwards
+   * would navigate with nothing, so it is read first and the handler bails if
+   * it is already gone.
+   */
+  const handleImportOther = useCallback(
+    (other: ImportSource, mode: 'summary' | 'preflight') => {
+      const conversationId = state.conversationId;
+      if (conversationId === null) return;
+      const params = { conversationId, preferredSource: other };
+
+      if (mode === 'preflight') {
+        // Shares the discard ref: this IS a discard, with a different
+        // destination afterwards.
+        if (discarding.current) return;
+        discarding.current = true;
+        discardImportPreflight()
+          .catch(() => {})
+          .finally(() => {
+            if (mounted.current) navigation.replace('ImportHowTo', params);
+          });
+        return;
+      }
+
+      if (importingOther.current) return;
+      importingOther.current = true;
+      setImportingOtherBusy(true);
+      // Synchronous, so the replace below is the next thing that happens —
+      // the ref is what stops a second tap in the same tick.
+      dismissImportSummary();
+      navigation.replace('ImportHowTo', params);
+    },
+    [state.conversationId, navigation],
+  );
+
+  /**
+   * Close the other source's open import so this one can start (#996 §2).
+   *
+   * Always behind a confirm: the session may still be RUNNING on another
+   * device, which this device cannot see.
+   */
+  const handleCloseOther = useCallback(() => {
+    const source = state.preflight?.source;
+    if (source === undefined || closing) return;
+
+    Alert.alert(describeCloseOtherConfirmTitle(source), CLOSE_OTHER_CONFIRM_BODY, [
+      { text: CLOSE_OTHER_KEEP_LABEL, style: 'cancel' },
+      {
+        text: CLOSE_OTHER_CONFIRM_LABEL,
+        style: 'destructive',
+        onPress: () => {
+          if (!mounted.current || closingRef.current) return;
+          latchClose();
+          setCloseNotice(null);
+          closeOtherImport()
+            .then((result) => {
+              if (!mounted.current) return;
+              if (result === 'failed') {
+                setCloseNotice({ message: CLOSE_OTHER_FAILED_COPY, isError: true });
+                return;
+              }
+              if (result === 'closed-stale') {
+                // The close WORKED; only the re-price didn't. Not an error,
+                // and re-tapping is safe because `/complete` is idempotent.
+                setCloseNotice({ message: describeCloseOtherStale(source), isError: false });
+                return;
+              }
+              // 'closed' re-priced the preflight, 'cancelled' means a wipe or
+              // a discard took the job away. Neither leaves anything to say.
+              setCloseNotice(null);
+            })
+            .catch(() => {
+              if (mounted.current) {
+                setCloseNotice({ message: CLOSE_OTHER_FAILED_COPY, isError: true });
+              }
+            })
+            .finally(() => {
+              if (mounted.current) unlatchClose();
+            });
+        },
+      },
+    ]);
+  }, [state.preflight?.source, closing, latchClose, unlatchClose]);
 
   const handleCancelParse = useCallback(() => {
     cancelImport();
@@ -329,11 +453,14 @@ export function ImportStatusScreen(): React.JSX.Element {
           <ImportPreflightView
             kind={view.kind}
             preflight={state.preflight}
-            source={state.source ?? 'facebook'}
             busy={starting}
+            closing={closing}
+            closeNotice={closeNotice}
             onImport={handleImport}
             onDiscard={handleDiscard}
             onSeeUnmigrated={handleSeeUnmigrated}
+            onCloseOther={handleCloseOther}
+            onImportOther={(other) => handleImportOther(other, 'preflight')}
           />
         );
 
@@ -364,8 +491,10 @@ export function ImportStatusScreen(): React.JSX.Element {
           <ImportSummaryView
             summary={state.summary}
             preflight={state.preflight}
+            busy={importingOtherBusy}
             onSeeUnmigrated={handleSeeUnmigrated}
             onDone={handleDone}
+            onImportOther={(other) => handleImportOther(other, 'summary')}
           />
         );
 

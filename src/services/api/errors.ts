@@ -13,7 +13,7 @@
  * the wrong error".
  */
 
-import type { ImportAllowance, QuotaUsage } from '../../types/api';
+import type { ImportAllowance, ImportSourceWire, QuotaUsage } from '../../types/api';
 import { formatMB } from '../../utils/formatBytes';
 import { INVALID_EMAIL_MESSAGE } from '../../utils/validateEmail';
 // The refusal vocabulary is defined in crypto/groupKeyErrors.ts — an
@@ -393,7 +393,9 @@ export type ImportRefusalCode = keyof typeof IMPORT_REFUSAL_CODES | 'unrecognize
  * shape and never logged.
  *
  * Which extras arrive depends on the code and the route:
- *  - `IMPORT_IN_PROGRESS` → `importId` (absent on the 23505 insert race)
+ *  - `IMPORT_IN_PROGRESS` → `importId` and `source`, TOGETHER or not at all
+ *    (the 23505 insert race looks the winner up and sends `{}` if it has
+ *    already gone, B#352)
  *  - `IMPORT_ALLOWANCE_EXCEEDED` → `allowance`, plus `stagedBytes` /
  *    `projectedBytes` on the media CHUNK route only
  *  - `IMPORT_QUOTA_EXCEEDED` → `availableBytes` + `declaredBytes` at start,
@@ -404,6 +406,16 @@ export interface ImportRefusal {
   readonly code: ImportRefusalCode;
   readonly closedStatus?: keyof typeof IMPORT_CLOSED_STATUSES | 'unrecognized';
   readonly importId?: string;
+  /**
+   * Which source the refusing session belongs to, when the server names one.
+   *
+   * ALLOWLISTED, not carried through: an unknown value is omitted rather than
+   * passed along as a string, so nothing downstream can branch on a server
+   * spelling this build does not know. Absent means "not stated", which every
+   * caller must read as FOREIGN — adopting a session whose source we cannot
+   * confirm is how one source's run drains into the other's allowance.
+   */
+  readonly source?: ImportSourceWire;
   readonly allowance?: ImportAllowance;
   readonly stagedBytes?: number;
   readonly projectedBytes?: number;
@@ -418,6 +430,17 @@ export interface ImportRefusal {
  */
 function isImportRefusalCode(c: unknown): c is keyof typeof IMPORT_REFUSAL_CODES {
   return typeof c === 'string' && Object.prototype.hasOwnProperty.call(IMPORT_REFUSAL_CODES, c);
+}
+
+/**
+ * Allowlist membership test for an import source.
+ *
+ * An exact match on the two literals, never a `typeof === 'string'` pass: the
+ * value decides whether a session is ours to adopt, so an unrecognised
+ * spelling has to be indistinguishable from an absent one.
+ */
+function isImportSourceWire(v: unknown): v is ImportSourceWire {
+  return v === 'facebook' || v === 'instagram';
 }
 
 /** Allowlist membership test for the `IMPORT_CLOSED` session status. */
@@ -495,6 +518,8 @@ function parseImportRefusal(rawBody?: string): ImportRefusal | undefined {
     if (typeof importId === 'string' && IMPORT_ID_RE.test(importId)) {
       refusal.importId = importId;
     }
+
+    if (isImportSourceWire(details?.source)) refusal.source = details.source;
 
     const allowance = parseImportAllowance(details?.allowance);
     if (allowance !== undefined) refusal.allowance = allowance;

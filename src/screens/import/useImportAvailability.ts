@@ -17,7 +17,8 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { probeImportAvailability } from '../../services/metaImport/importRunner';
 
-import type { ImportAllowance, ImportLimits } from '../../types/api';
+import type { ImportAllowance } from '../../types/api';
+import type { ImportSource } from '../../services/metaImport/types';
 
 /**
  * `unavailable` is a definite no (the server returned 404 — the flag is off).
@@ -29,10 +30,17 @@ export type ImportAvailabilityStatus = 'checking' | 'available' | 'unavailable' 
 
 export interface ImportAvailabilityState {
   readonly status: ImportAvailabilityStatus;
-  /** Non-null only when `status === 'available'`. */
-  readonly allowance: ImportAllowance | null;
-  readonly limits: ImportLimits | null;
+  /**
+   * BOTH sources' buckets, non-null only when `status === 'available'`.
+   *
+   * Per source since B#352; the how-to screen shows what is left of each.
+   */
+  readonly allowances: Readonly<Record<ImportSource, ImportAllowance>> | null;
 }
+
+// `limits` is deliberately NOT carried (#996 §7.3): nothing in the UI read it,
+// and a field nobody reads is a field that drifts. The runner's own
+// `ImportAvailability.limits` is untouched — the preflight needs it.
 
 /** Which orbit the answer is ABOUT — never exposed, only compared. */
 interface ProbeState extends ImportAvailabilityState {
@@ -42,15 +50,13 @@ interface ProbeState extends ImportAvailabilityState {
 const CHECKING: ProbeState = Object.freeze({
   conversationId: null,
   status: 'checking',
-  allowance: null,
-  limits: null,
+  allowances: null,
 });
 
 const NO_ORBIT: ProbeState = Object.freeze({
   conversationId: null,
   status: 'unavailable',
-  allowance: null,
-  limits: null,
+  allowances: null,
 });
 
 export function useImportAvailability(conversationId: string | null): ImportAvailabilityState {
@@ -82,8 +88,7 @@ export function useImportAvailability(conversationId: string | null): ImportAvai
           setState({
             conversationId: id,
             status: result.available ? 'available' : 'unavailable',
-            allowance: result.allowance,
-            limits: result.limits,
+            allowances: result.allowances,
           });
         },
         () => {
@@ -91,7 +96,7 @@ export function useImportAvailability(conversationId: string | null): ImportAvai
           // bar, and a failed availability probe is a hidden section, not an
           // incident.
           if (!active) return;
-          setState({ conversationId: id, status: 'error', allowance: null, limits: null });
+          setState({ conversationId: id, status: 'error', allowances: null });
         },
       );
 

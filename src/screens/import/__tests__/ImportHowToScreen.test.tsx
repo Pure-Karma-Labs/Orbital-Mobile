@@ -33,13 +33,19 @@ import { ImportHowToScreen } from '../ImportHowToScreen';
 import {
   ACCOUNTS_CENTER_URL,
   PICK_FAILURE_COPY,
+  SOURCE_CHOICE_BODY,
+  SOURCE_CHOICE_CANCEL_LABEL,
+  SOURCE_CHOICE_TITLE,
+  SOURCE_LABEL,
+  describeAllowances,
   describeHowToIntro,
+  describeImportOtherCaption,
   describeIntoCaption,
 } from '../importCopy';
 
 import type { ImportPreflight, ImportRunnerState } from '../../../services/metaImport/importRunner';
 import type { PickFailureReason, PickParseResult } from '../../../services/metaImport/importRunner';
-import type { SkipReason } from '../../../services/metaImport/types';
+import type { ImportSource, SkipReason } from '../../../services/metaImport/types';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -49,9 +55,13 @@ const mockReplace = jest.fn();
 const mockGoBack = jest.fn();
 const mockNavigate = jest.fn();
 
-/** Mutable so one test can point the screen at a different orbit. */
-const mockRouteParams: { source: 'facebook' | 'instagram'; conversationId: string } = {
-  source: 'facebook',
+/**
+ * Mutable so one test can point the screen at a different orbit.
+ *
+ * There is no `source` any more (#996): the archive decides, and
+ * `preferredSource` is set only by the "import the other one" offers.
+ */
+const mockRouteParams: { conversationId: string; preferredSource?: ImportSource } = {
   conversationId: 'g1',
 };
 
@@ -164,6 +174,15 @@ const NO_SKIPS: Readonly<Record<SkipReason, number>> = {
 
 const ALLOWANCE = { postsUsed: 0, bytesUsed: 0, postsLimit: 1000, bytesLimit: 2147483648 };
 
+/** Per source since B#352. Both buckets are shown, and the chooser reads them. */
+const ALLOWANCES: Readonly<Record<ImportSource, typeof ALLOWANCE>> = {
+  facebook: ALLOWANCE,
+  instagram: ALLOWANCE,
+};
+
+/** A bucket with nothing left in it. */
+const EXHAUSTED = { postsUsed: 1000, bytesUsed: 0, postsLimit: 1000, bytesLimit: 2147483648 };
+
 const LIMITS = {
   batchMax: 50,
   mediaPerItemMax: 10,
@@ -177,6 +196,8 @@ const LIMITS = {
 
 const PREFLIGHT: ImportPreflight = {
   summary: null,
+  source: 'facebook' as const,
+  otherOpenImport: null,
   allowance: ALLOWANCE,
   limits: LIMITS,
   contentRetentionDays: null,
@@ -250,15 +271,15 @@ let alertSpy: jest.SpyInstance;
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockRouteParams.source = 'facebook';
   mockRouteParams.conversationId = 'g1';
+  delete mockRouteParams.preferredSource;
   mockAppState.activeConversationId = 'g1';
   mockAppState.conversations = {
     g1: { id: 'g1', name: 'Route Orbit', type: 'group' },
     g2: { id: 'g2', name: 'Other Orbit', type: 'group' },
   };
   importStore.setState({ ...BASE_STATE }, true);
-  mockProbe.mockResolvedValue({ available: true, allowance: ALLOWANCE, limits: LIMITS });
+  mockProbe.mockResolvedValue({ available: true, allowances: ALLOWANCES, limits: LIMITS });
   mockResume.mockResolvedValue(undefined);
   openURLSpy = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined as unknown as boolean);
   alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
@@ -280,24 +301,27 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('ImportHowToScreen — Accounts Center link', () => {
-  it('hands the URL to the system browser exactly once', async () => {
+  /**
+   * ONE LINK PER PLATFORM (#996). The screen no longer knows which source the
+   * member is importing — and an Instagram-only member cannot reach their
+   * download through the Facebook host, so a single neutral link would be the
+   * wrong one for half of them.
+   */
+  it('offers a link per source, each opening its own host', async () => {
     const renderer = await renderScreen();
 
-    tap(renderer.root, 'import-accounts-center-link');
-
+    tap(renderer.root, 'import-accounts-center-link-facebook');
     expect(openURLSpy).toHaveBeenCalledTimes(1);
-    const url = String(openURLSpy.mock.calls[0][0]);
-    expect(url).toBe(ACCOUNTS_CENTER_URL.facebook);
-    expect(url.startsWith('https://accountscenter.')).toBe(true);
-  });
+    const facebookUrl = String(openURLSpy.mock.calls[0][0]);
+    expect(facebookUrl).toBe(ACCOUNTS_CENTER_URL.facebook);
+    expect(facebookUrl.startsWith('https://accountscenter.')).toBe(true);
 
-  it('uses the Instagram Accounts Center URL for an Instagram import', async () => {
-    mockRouteParams.source = 'instagram';
-    const renderer = await renderScreen();
+    tap(renderer.root, 'import-accounts-center-link-instagram');
+    expect(openURLSpy).toHaveBeenCalledTimes(2);
+    expect(String(openURLSpy.mock.calls[1][0])).toBe(ACCOUNTS_CENTER_URL.instagram);
 
-    tap(renderer.root, 'import-accounts-center-link');
-
-    expect(String(openURLSpy.mock.calls[0][0])).toBe(ACCOUNTS_CENTER_URL.instagram);
+    // The two hosts really are different, which is the reason there are two.
+    expect(ACCOUNTS_CENTER_URL.facebook).not.toBe(ACCOUNTS_CENTER_URL.instagram);
   });
 
   it('renders no WebView anywhere in the tree', async () => {
@@ -348,7 +372,13 @@ describe('ImportHowToScreen — pick results', () => {
     const renderer = await renderScreen();
     await tapAndSettle(renderer.root, 'import-choose-files');
 
-    expect(mockPick).toHaveBeenCalledWith({ conversationId: 'g1', source: 'facebook' });
+    // The orbit and a CHOOSER — never a source (#996). Which platform this
+    // import is for is the archive's answer, not the screen's.
+    expect(mockPick).toHaveBeenCalledWith({
+      conversationId: 'g1',
+      chooseSource: expect.any(Function),
+    });
+    expect(mockPick.mock.calls[0][0]).not.toHaveProperty('source');
     expect(mockReplace).toHaveBeenCalledTimes(1);
     expect(mockReplace).toHaveBeenCalledWith('ImportStatus');
   });
@@ -526,7 +556,7 @@ describe('ImportHowToScreen — the orbit comes from the route', () => {
     // renders through the memo wrapper), not a bare host Text.
     const owner = introNodes.find((node) => typeof node.type === 'function');
     expect(owner).toBeDefined();
-    expect(String(owner?.props.children)).toBe(describeHowToIntro('facebook', 'Route Orbit'));
+    expect(String(owner?.props.children)).toBe(describeHowToIntro('Route Orbit'));
 
     // And the rendered text really is the intro, carrying the orbit name.
     const host = findHostByTestId(renderer.root, 'import-how-to-intro');
@@ -555,6 +585,261 @@ describe('ImportHowToScreen — the orbit comes from the route', () => {
     const renderer = await renderScreen();
     await tapAndSettle(renderer.root, 'import-choose-files');
 
-    expect(mockPick).toHaveBeenCalledWith({ conversationId: 'g1', source: 'facebook' });
+    expect(mockPick).toHaveBeenCalledWith({
+      conversationId: 'g1',
+      chooseSource: expect.any(Function),
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The chooser (#996 §7.3)
+//
+// The runner calls `chooseSource` DURING the parse, when the archive turns out
+// to hold both platforms, and awaits the answer. The tests therefore drive it
+// the way the runner does: grab the function off the `pickAndStartParse` mock
+// and invoke it.
+//
+// Buttons are matched by TEXT, never by index. The array order
+// (`[Cancel, Facebook, Instagram]`) exists for Android, which assigns its three
+// slots from the END, and an index-based test would silently pass while the
+// member saw the wrong labels.
+// ---------------------------------------------------------------------------
+
+/** The chooser the screen handed to the runner on its most recent pick. */
+function chooserFromPick(): () => Promise<ImportSource | null> {
+  const calls = mockPick.mock.calls;
+  expect(calls.length).toBeGreaterThan(0);
+  return calls[calls.length - 1][0].chooseSource as () => Promise<ImportSource | null>;
+}
+
+/** The buttons of the most recent Alert, which is the chooser's. */
+function chooserButtons(): AlertButton[] {
+  const calls = alertSpy.mock.calls;
+  expect(calls.length).toBeGreaterThan(0);
+  return calls[calls.length - 1][2] as AlertButton[];
+}
+
+function chooserButton(text: string): AlertButton {
+  const button = chooserButtons().find((candidate) => candidate.text === text);
+  expect(button).toBeDefined();
+  return button as AlertButton;
+}
+
+/** The options bag (`cancelable` / `onDismiss`) of the most recent Alert. */
+function chooserOptions(): { cancelable?: boolean; onDismiss?: () => void } {
+  const calls = alertSpy.mock.calls;
+  return calls[calls.length - 1][3] as { cancelable?: boolean; onDismiss?: () => void };
+}
+
+/**
+ * Start a pick that hangs, so the chooser can be driven while the screen still
+ * believes a pick is in flight — which is exactly when the runner calls it.
+ */
+async function renderWithPendingPick(): Promise<ReactTestRenderer> {
+  mockPick.mockReturnValue(new Promise<PickParseResult>(() => {}));
+  const renderer = await renderScreen();
+  await tapAndSettle(renderer.root, 'import-choose-files');
+  return renderer;
+}
+
+describe('ImportHowToScreen — the chooser', () => {
+  it('asks with the §3 copy, and offers Cancel first in the array', async () => {
+    await renderWithPendingPick();
+
+    const pending = chooserFromPick()();
+
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0][0]).toBe(SOURCE_CHOICE_TITLE);
+    expect(alertSpy.mock.calls[0][1]).toBe(SOURCE_CHOICE_BODY);
+
+    // Order is Android's contract; the texts are what the member reads.
+    expect(chooserButtons().map((button) => button.text)).toEqual([
+      SOURCE_CHOICE_CANCEL_LABEL,
+      SOURCE_LABEL.facebook,
+      SOURCE_LABEL.instagram,
+    ]);
+    expect(chooserButton(SOURCE_CHOICE_CANCEL_LABEL).style).toBe('cancel');
+
+    // Android's back-press/outside-tap path must exist, or the dialog could
+    // be dismissed with nobody answering the runner.
+    expect(chooserOptions().cancelable).toBe(true);
+    expect(typeof chooserOptions().onDismiss).toBe('function');
+
+    await act(async () => {
+      chooserButton(SOURCE_CHOICE_CANCEL_LABEL).onPress?.();
+    });
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it.each([
+    ['facebook' as const, SOURCE_LABEL.facebook],
+    ['instagram' as const, SOURCE_LABEL.instagram],
+  ])('resolves %s when that button is pressed', async (source, label) => {
+    await renderWithPendingPick();
+
+    const pending = chooserFromPick()();
+    await act(async () => {
+      chooserButton(label).onPress?.();
+    });
+
+    await expect(pending).resolves.toBe(source);
+  });
+
+  it('resolves null when the member backs out of the dialog', async () => {
+    await renderWithPendingPick();
+
+    const pending = chooserFromPick()();
+    await act(async () => {
+      chooserOptions().onDismiss?.();
+    });
+
+    await expect(pending).resolves.toBeNull();
+  });
+
+  /**
+   * The runner is awaiting this promise. A screen that went away with the
+   * dialog still presented would leave the pick hanging for the rest of the
+   * session, holding the archive's part grant with it.
+   */
+  it('settles null on unmount, and ignores a late tap afterwards', async () => {
+    const renderer = await renderWithPendingPick();
+
+    const pending = chooserFromPick()();
+    const facebook = chooserButton(SOURCE_LABEL.facebook);
+
+    await act(async () => {
+      renderer.unmount();
+    });
+    mountedRenderers.pop();
+
+    await expect(pending).resolves.toBeNull();
+
+    // The stale-dialog case: Android can keep a dialog up past the unmount.
+    // The captured callback must be a no-op, not a second answer.
+    expect(() => facebook.onPress?.()).not.toThrow();
+    await expect(pending).resolves.toBeNull();
+  });
+
+  /**
+   * A dialog offering a choice that cannot be taken is not a choice. The
+   * shortcut reads the per-source allowance the probe already fetched.
+   */
+  it.each([
+    ['facebook' as const, 'instagram' as const],
+    ['instagram' as const, 'facebook' as const],
+  ])('skips the dialog when %s has no room left', async (exhausted, expected) => {
+    mockProbe.mockResolvedValue({
+      available: true,
+      allowances: { ...ALLOWANCES, [exhausted]: EXHAUSTED },
+      limits: LIMITS,
+    });
+    await renderWithPendingPick();
+
+    await expect(chooserFromPick()()).resolves.toBe(expected);
+    expect(alertSpy).not.toHaveBeenCalled();
+  });
+
+  it('still asks when BOTH sources are exhausted', async () => {
+    mockProbe.mockResolvedValue({
+      available: true,
+      allowances: { facebook: EXHAUSTED, instagram: EXHAUSTED },
+      limits: LIMITS,
+    });
+    await renderWithPendingPick();
+
+    const pending = chooserFromPick()();
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      chooserButton(SOURCE_CHOICE_CANCEL_LABEL).onPress?.();
+    });
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('asks when the allowance is unknown, rather than guessing', async () => {
+    // A probe that never answers: unknown is NOT zero, and treating it as
+    // exhausted would pick a platform on the member's behalf.
+    mockProbe.mockReturnValue(new Promise(() => {}));
+    await renderWithPendingPick();
+
+    chooserFromPick()();
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers with preferredSource and never asks', async () => {
+    mockRouteParams.preferredSource = 'instagram';
+    const renderer = await renderWithPendingPick();
+
+    await expect(chooserFromPick()()).resolves.toBe('instagram');
+    expect(alertSpy).not.toHaveBeenCalled();
+
+    // …and the member is told why they are back on this screen.
+    expect(String(findHostByTestId(renderer.root, 'import-how-to-preferred').props.children)).toBe(
+      describeImportOtherCaption('instagram'),
+    );
+  });
+
+  it('shows no preferred caption on a normal visit', async () => {
+    const renderer = await renderScreen();
+    expect(hasHostTestId(renderer.root, 'import-how-to-preferred')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The allowance line, and the busy button
+// ---------------------------------------------------------------------------
+
+describe('ImportHowToScreen — allowances and busy state', () => {
+  it('shows what is left of BOTH sources', async () => {
+    mockProbe.mockResolvedValue({
+      available: true,
+      allowances: { facebook: { ...ALLOWANCE, postsUsed: 40 }, instagram: ALLOWANCE },
+      limits: LIMITS,
+    });
+
+    const renderer = await renderScreen();
+    const line = String(findHostByTestId(renderer.root, 'import-how-to-allowance').props.children);
+
+    expect(line).toBe(describeAllowances(960, 1000));
+    expect(line).toContain(SOURCE_LABEL.facebook);
+    expect(line).toContain(SOURCE_LABEL.instagram);
+  });
+
+  it('hides the allowance line until the probe answers', async () => {
+    mockProbe.mockReturnValue(new Promise(() => {}));
+    const renderer = await renderScreen();
+    expect(hasHostTestId(renderer.root, 'import-how-to-allowance')).toBe(false);
+  });
+
+  /**
+   * The wait now spans the OS picker, the chooser dialog and the whole parse.
+   * A ref would guard the second tap while leaving the button looking idle for
+   * as long as the member takes to answer "which posts first?".
+   */
+  it('keeps "Choose export files" busy for the whole pick', async () => {
+    const renderer = await renderWithPendingPick();
+
+    expect(
+      (findByTestId(renderer.root, 'import-choose-files').props as { loading?: boolean }).loading,
+    ).toBe(true);
+
+    // A second tap while busy starts nothing.
+    await tapAndSettle(renderer.root, 'import-choose-files');
+    expect(mockPick).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives the button back when the pick settles', async () => {
+    const result: PickParseResult = { kind: 'cancelled' };
+    mockPick.mockResolvedValue(result);
+
+    const renderer = await renderScreen();
+    await tapAndSettle(renderer.root, 'import-choose-files');
+
+    expect(
+      (findByTestId(renderer.root, 'import-choose-files').props as { loading?: boolean }).loading,
+    ).toBe(false);
+    await tapAndSettle(renderer.root, 'import-choose-files');
+    expect(mockPick).toHaveBeenCalledTimes(2);
   });
 });

@@ -77,7 +77,7 @@ import {
 import { deriveAuthPhase } from '../../navigation/authPhase';
 import { useAppStore } from '../../stores/useAppStore';
 import { generateUUID } from '../../utils/uuid';
-import { NetworkError, NotFoundError, ServerError } from '../api/errors';
+import { ConflictError, NetworkError, NotFoundError, ServerError } from '../api/errors';
 import {
   completeImport,
   getGroupImports,
@@ -117,6 +117,8 @@ import {
   isRunStale,
 } from './importErrors';
 import { estimateImportBytes, importMediaStage, uploadImportItemMedia } from './importMedia';
+import { detectSources } from './layout';
+import { OTHER_IMPORT_SOURCE } from './types';
 import { parseArchive } from './parseArchive';
 
 import type {
@@ -125,7 +127,12 @@ import type {
   UnmigratedImportItemRow,
 } from '../../database/repositories/importRepository';
 import type { ImportItemStatus, ImportJobRow } from '../../types/database';
-import type { ImportAllowance, ImportLimits } from '../../types/api';
+import type {
+  GroupImportsResponse,
+  ImportAllowance,
+  ImportLimits,
+  OpenImportSummary,
+} from '../../types/api';
 import type { ImportKeySession } from '../crypto/importCrypto';
 import type { ArchiveImportSession, ArchivePartToken } from './archiveAccess';
 import type { BuiltImportItem, ImportItemCode } from './importBatch';
@@ -156,6 +163,21 @@ export type ImportPhase =
 
 /** What the member is told the run achieved. Counts and client enums only. */
 export interface ImportSummary {
+  /** Which platform this run imported. Never inferred by the screen. */
+  readonly source: ImportSource;
+  /**
+   * The archive also held posts of the OTHER source (#996).
+   *
+   * Resolved by {@link otherSourceDetectedFor}, and worth knowing because the
+   * summary is where the member is offered the second import.
+   *
+   * **Caveat:** a run RESUMED at launch whose items are all text has no
+   * archive to re-read and no `ParseSummary` to fall back on, so this is
+   * false there even when the export does hold the other source. Persisting
+   * it would cost a migration for one hint; the member still has the Settings
+   * row and an ordinary pick.
+   */
+  readonly otherSourceDetected: boolean;
   readonly created: number;
   readonly duplicate: number;
   readonly failed: number;
@@ -181,6 +203,25 @@ export interface ImportSummary {
  */
 export interface ImportPreflight {
   readonly summary: ParseSummary | null;
+  /**
+   * Which platform's posts this job imports — DETECTED from the archive, not
+   * chosen by the screen (#996).
+   *
+   * On the preflight rather than read off the store, because the store's
+   * `source` is null between a dismiss and the next pick, and a view that
+   * fell back to `'facebook'` would label an Instagram import wrongly.
+   */
+  readonly source: ImportSource;
+  /**
+   * The member's OPEN import of the other source in this orbit, or null.
+   *
+   * There is one open session per member per orbit across sources (B#352), so
+   * this one blocks the start — but it must NOT refuse the archive: the job
+   * stays `ready` and keeps its part grant, and #996 offers to close the other
+   * import from the preflight. Set from the fresh GET through
+   * {@link otherOpenImportOf}, where an unstated source counts as foreign.
+   */
+  readonly otherOpenImport: { readonly importId: string } | null;
   readonly allowance: ImportAllowance;
   readonly limits: ImportLimits;
   /** From `Conversation.contentRetentionDays`; null when the orbit keeps all. */
@@ -273,7 +314,16 @@ export interface ImportRunnerState {
  * Four arms, because #928's copy for them differs in what it asks the member
  * to DO: re-export as JSON, wait a minute, check the connection, or try again.
  */
-export type PickFailureReason = 'archive' | 'key_pending' | 'network' | 'other';
+export type PickFailureReason = 'archive' | 'no_posts' | 'key_pending' | 'network' | 'other';
+
+/**
+ * How the caller asks the member which source to import first.
+ *
+ * Only called when the archive holds BOTH (#996). `null` means they backed
+ * out — a cancel, not a failure. The runner races it against its own abort
+ * signal, so a wipe or a Cancel while the dialog is up settles it either way.
+ */
+export type ChooseImportSource = () => Promise<ImportSource | null>;
 
 /** What {@link pickAndStartParse} answers. A refusal is typed, never a throw. */
 export type PickParseResult =
@@ -292,7 +342,14 @@ export type RepickResult = 'resumed' | 'different-archive' | 'cancelled';
 /** What {@link probeImportAvailability} answers. */
 export interface ImportAvailability {
   readonly available: boolean;
-  readonly allowance: ImportAllowance | null;
+  /**
+   * BOTH sources' buckets, or null when the feature is unavailable (B#352).
+   *
+   * A map rather than the one bucket this import needs: the how-to screen
+   * shows what is left of each, and the chooser skips itself when only one
+   * source has room. Index it with the source being imported.
+   */
+  readonly allowances: Readonly<Record<ImportSource, ImportAllowance>> | null;
   readonly limits: ImportLimits | null;
 }
 
@@ -1234,13 +1291,26 @@ async function applyVerdict(
       });
 
     case 'adopt-session': {
-      const importId = verdict.importId ?? (await lookupOpenSessionId(r));
-      if (importId === null) return failRunWith(r, 'REFUSED', stage);
+      // The refusal's own pair when the server sent BOTH; otherwise ask. The
+      // two travel together or not at all (B#352's 23505 arm sends neither),
+      // so half a pair is no better than none: an id without a source cannot
+      // be checked, and this is the check that matters.
+      const open =
+        verdict.importId !== undefined && verdict.source !== undefined
+          ? { importId: verdict.importId, source: verdict.source }
+          : await lookupOpenSession(r);
+      if (open === null) return failRunWith(r, 'REFUSED', stage);
+      // NOT OURS — and `undefined` counts, because a session we cannot
+      // confirm is one we must not take. Nothing is assigned: `settleRun`
+      // completes whatever `r.importId` holds, so adopting the other
+      // source's id would close the member's OTHER import on our way out,
+      // and drain this job's posts into the wrong allowance bucket first.
+      if (open.source !== r.source) return failRunWith(r, 'OTHER_IMPORT_OPEN', stage);
       // The id we already hold is not an adoption: answering `retry` for it
       // would re-POST at the same session that just refused us, as fast as the
       // loop can go. The server has told us nothing new, so stop.
-      if (importId === r.importId) return failRunWith(r, 'REFUSED', stage);
-      r.importId = importId;
+      if (open.importId === r.importId) return failRunWith(r, 'REFUSED', stage);
+      r.importId = open.importId;
       return 'retry';
     }
 
@@ -1304,10 +1374,19 @@ function parkItem(r: ActiveRun, itemId: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** The member's open session on this orbit, from a fresh preflight GET. */
-async function lookupOpenSessionId(r: ActiveRun): Promise<string | null> {
+async function lookupOpenSession(
+  r: ActiveRun,
+): Promise<{ readonly importId: string; readonly source: ImportSource | undefined } | null> {
   try {
-    const preflight = await getGroupImports(r.conversationId);
-    return preflight.openImport?.importId ?? null;
+    // `cache: false`: a mid-run read must not refresh the preflight screen's
+    // allowance behind the member's back.
+    const preflight = await fetchGroupImports(r.conversationId, { cache: false });
+    const open = preflight?.openImport;
+    if (open === null || open === undefined) return null;
+    // The SOURCE comes back with the id, because "which session is open" and
+    // "is it mine to adopt" are one question (B#352): one open session per
+    // member per orbit across sources.
+    return { importId: open.importId, source: open.source };
   } catch {
     // The adoption path already knows the member has a session; failing to
     // learn its id is a pause-or-stop decision the next call will make.
@@ -1346,6 +1425,7 @@ async function restartServerSession(r: ActiveRun, stageAttempt: number): Promise
       const started = await startImport(r.conversationId, {
         declaredPosts: r.declaredPosts,
         declaredBytes: r.declaredBytes,
+        source: r.source,
       });
       r.importId = started.importId;
       r.limits = started.limits;
@@ -1431,9 +1511,22 @@ async function openServerSession(r: ActiveRun): Promise<Step> {
   for (let attempt = 0; ; attempt++) {
     if (stopped(r)) return 'stop';
     try {
-      const preflight = await getGroupImports(r.conversationId);
+      const preflight = await fetchGroupImports(r.conversationId, { cache: false });
+      if (preflight === null) {
+        // A 404 (the flag went off under us) or a server that cannot price
+        // this import. A wipe answers null too, and `stopped` is what tells
+        // them apart — it is already true by then.
+        if (stopped(r)) return 'stop';
+        return failRunWith(r, 'IMPORTS_UNAVAILABLE', 'start');
+      }
       r.limits = preflight.limits;
       if (preflight.openImport !== null && preflight.openImport.status === 'open') {
+        // The one open slot is held by the OTHER source (or by a session
+        // whose source the server did not state, which is the same answer).
+        // Terminal, with NOTHING assigned: see the adopt arm.
+        if (otherOpenImportOf(preflight.openImport, r.source) !== null) {
+          return failRunWith(r, 'OTHER_IMPORT_OPEN', 'start');
+        }
         importId = preflight.openImport.importId;
       }
       break;
@@ -1450,6 +1543,9 @@ async function openServerSession(r: ActiveRun): Promise<Step> {
         const started = await startImport(r.conversationId, {
           declaredPosts: r.declaredPosts,
           declaredBytes: r.declaredBytes,
+          // Which allowance bucket this session spends, and REQUIRED since
+          // B#352: an omitted source is 400 `IMPORT_DECLARED_INVALID`.
+          source: r.source,
         });
         importId = started.importId;
         r.limits = started.limits;
@@ -1976,7 +2072,27 @@ function startEndOfRunPass(r: ActiveRun): void {
 // Completion (§4.12)
 // ---------------------------------------------------------------------------
 
-function buildSummary(r: ActiveRun): ImportSummary {
+/**
+ * Did this archive also hold the OTHER source's posts?
+ *
+ * ONE accessor, asked in order of how much it knows:
+ *  1. the OPEN archive, re-detected — the only source of truth, and the one
+ *     that recovers the answer for a run resumed at launch;
+ *  2. the parse's own `ParseSummary`, which knows it for a job parsed in this
+ *     app session;
+ *  3. false — see the caveat on {@link ImportSummary.otherSourceDetected}.
+ *
+ * It must be asked BEFORE `archive.close()`, which is why `settleRun`
+ * computes it at the top rather than inside {@link buildSummary}.
+ */
+function otherSourceDetectedFor(r: ActiveRun, archive: ArchiveImportSession | null): boolean {
+  if (archive !== null) {
+    return detectSources(archive.entries)[OTHER_IMPORT_SOURCE[r.source]];
+  }
+  return draft.preflight?.summary?.otherSourceDetected === true;
+}
+
+function buildSummary(r: ActiveRun, otherSourceDetected: boolean): ImportSummary {
   const counts = countImportItemsByStatus(r.jobId);
   const skips = countImportSkipsByReason(r.jobId);
   // `uploading` is the schema's only parking space, so it holds three
@@ -1995,6 +2111,8 @@ function buildSummary(r: ActiveRun): ImportSummary {
   // {@link undrainedWork}: both exempt `r.held` and nothing else, so the six
   // lines sum to the importable total in every ending.
   return {
+    source: r.source,
+    otherSourceDetected,
     created: counts.created,
     duplicate: counts.duplicate,
     failed: counts.failed,
@@ -2083,6 +2201,9 @@ async function settleRun(r: ActiveRun): Promise<void> {
 
   const archive = r.archive;
   r.archive = null;
+  // BEFORE `archive.close()`: the entries are the only place this answer
+  // lives for a run resumed at launch, and they are gone a line later.
+  const otherSourceDetected = otherSourceDetectedFor(r, archive);
 
   try {
     if (archive !== null) {
@@ -2137,7 +2258,7 @@ async function settleRun(r: ActiveRun): Promise<void> {
     if (wiped(r)) return;
 
     assertDrainedOrFail(r);
-    const summary = buildSummary(r);
+    const summary = buildSummary(r, otherSourceDetected);
     finishImportJob(r.jobId, terminalStatusFor(r));
     if (r.terminal !== null && !r.cancelled) {
       captureImportFailure(r, 'complete', r.terminal);
@@ -2350,6 +2471,7 @@ function retentionDaysFor(conversationId: string): number | null {
  */
 function buildPreflight(args: {
   conversationId: string;
+  source: ImportSource;
   allowance: ImportAllowance;
   limits: ImportLimits;
   importable: number;
@@ -2357,6 +2479,7 @@ function buildPreflight(args: {
   heldVideo: number;
   skippedByReason: Readonly<Record<SkipReason, number>>;
   summary: ParseSummary | null;
+  openImport: OpenImportSummary | null;
 }): ImportPreflight {
   const remainingPosts = Math.max(0, args.allowance.postsLimit - args.allowance.postsUsed);
   const remainingBytes = Math.max(0, args.allowance.bytesLimit - args.allowance.bytesUsed);
@@ -2369,6 +2492,8 @@ function buildPreflight(args: {
 
   return {
     summary: args.summary,
+    source: args.source,
+    otherOpenImport: otherOpenImportOf(args.openImport, args.source),
     allowance: args.allowance,
     limits: args.limits,
     contentRetentionDays: retentionDaysFor(args.conversationId),
@@ -2384,36 +2509,68 @@ function buildPreflight(args: {
 }
 
 /**
- * Is this preflight something a run can be started from?
+ * Is there anything in this ARCHIVE worth keeping a job for?
  *
- * One predicate for the two refusals, so the three places that must agree —
+ * The two refusals only — over the remaining allowance, or nothing importable
+ * in it at all. One predicate, so the three places that must agree —
  * `parseIntoJob`'s `setImportJobParsed`, `pickAndStartParse`'s release arm and
- * {@link confirmAndRunImport}'s guard — cannot drift apart. Neither refusal
- * starts a server session, writes a terminal code or reports anything: the
- * member is told what the archive holds and offered a different export.
+ * `confirmAndRunImport` — cannot drift apart. `closeOtherImport` asks it too:
+ * a refused archive must never close the member's other session. Neither refusal starts a
+ * server session, writes a terminal code or reports anything: the member is
+ * told what the archive holds and offered a different export.
+ *
+ * It deliberately says NOTHING about the other source's open session
+ * ({@link canStartFromPreflight} is that question). A foreign session is
+ * temporary and has nothing to do with these files: refusing the archive for
+ * it would release the part grant and delete a parsed job the member can run
+ * the moment that session closes.
  */
 function isPreflightRunnable(preflight: ImportPreflight): boolean {
   return preflight.overAllowance === null && !preflight.nothingToImport;
 }
 
+/**
+ * Can a run be started from this preflight RIGHT NOW?
+ *
+ * Runnable, AND nothing else of the member's is open in this orbit. The two
+ * questions are separate because their answers decay differently: the archive
+ * facts are settled for this job's lifetime, while the other import can close
+ * between one render and the next.
+ *
+ * Exported for #996's preflight view, which disables Import on exactly this.
+ * It is NOT the run's gate: {@link confirmAndRunImport} asks only
+ * {@link isPreflightRunnable} (the cached archive facts), and the other
+ * session is re-asked by `enterJob`'s unconditional rebuild, which is the
+ * answer the run is actually gated on.
+ */
+export function canStartFromPreflight(preflight: ImportPreflight): boolean {
+  return isPreflightRunnable(preflight) && preflight.otherOpenImport === null;
+}
+
 /** The preflight for a `ready` job, rebuilt from SQLite plus a fresh GET. */
 async function rebuildPreflight(job: ImportJobRow): Promise<ImportPreflight | null> {
-  let allowance: ImportAllowance;
-  let limits: ImportLimits;
+  let response: GroupImportsResponse | null;
   try {
-    const response = await getGroupImports(job.conversation_id);
-    allowance = response.allowance;
-    limits = response.limits;
+    response = await fetchGroupImports(job.conversation_id);
   } catch {
     // Without a fresh allowance there is nothing honest to show; #928 offers
     // the job again on the next launch.
     return null;
   }
+  if (response === null) return null;
+  // The job's OWN source's bucket: an import spends one of two, and pricing a
+  // Facebook job against the Instagram allowance is how a member gets refused
+  // at start by a number the preflight never showed them (B#352).
+  const allowance = allowanceFor(response, job.source);
+  if (allowance === null) return null;
+  const limits = response.limits;
 
   const counts = countImportItemsByStatus(job.id);
   const skips = countImportSkipsByReason(job.id);
   return buildPreflight({
     conversationId: job.conversation_id,
+    source: job.source,
+    openImport: response.openImport,
     allowance,
     limits,
     importable: job.declared_posts ?? importableTotal(counts),
@@ -2427,6 +2584,116 @@ async function rebuildPreflight(job: ImportJobRow): Promise<ImportPreflight | nu
 // ---------------------------------------------------------------------------
 // Public API (§4.2)
 // ---------------------------------------------------------------------------
+
+/** The answer for an orbit whose imports are off, or priced by an old server. */
+const UNAVAILABLE_IMPORTS: ImportAvailability = Object.freeze({
+  available: false,
+  allowances: null,
+  limits: null,
+});
+
+/**
+ * One source's bucket out of a preflight response, or null — FAIL CLOSED.
+ *
+ * All four fields must be finite numbers, for the same reason
+ * `parseImportAllowance` insists on it: the runner computes "remaining" from a
+ * used/limit PAIR, so a half-populated bucket makes a missing limit read as
+ * zero room left and refuses an archive the member could import. Null here
+ * means "we cannot price this", which the callers turn into "unavailable"
+ * rather than into a refusal.
+ */
+function allowanceFor(
+  response: GroupImportsResponse,
+  source: ImportSource,
+): ImportAllowance | null {
+  const entry: ImportAllowance | undefined = response.allowances?.[source];
+  if (entry === null || entry === undefined || typeof entry !== 'object') return null;
+  const { postsUsed, bytesUsed, postsLimit, bytesLimit } = entry;
+  for (const n of [postsUsed, bytesUsed, postsLimit, bytesLimit]) {
+    if (typeof n !== 'number' || !Number.isFinite(n)) return null;
+  }
+  return { postsUsed, bytesUsed, postsLimit, bytesLimit };
+}
+
+/**
+ * The member's open session when it belongs to the OTHER source, else null.
+ *
+ * One predicate for every caller, because "is this session mine to adopt?" is
+ * asked at the preflight, at start and on the adopt verdict, and three copies
+ * is three places to get the fail-closed direction wrong.
+ *
+ * An ABSENT source counts as foreign: a server that does not say is a server
+ * we cannot confirm against, and adopting an unconfirmed session spends the
+ * wrong allowance bucket and closes someone else's work on settle. A session
+ * that is not `open` is nobody's problem.
+ */
+function otherOpenImportOf(
+  openImport: OpenImportSummary | null | undefined,
+  source: ImportSource,
+): { readonly importId: string } | null {
+  if (openImport === null || openImport === undefined) return null;
+  if (openImport.status !== 'open') return null;
+  if (openImport.source === source) return null;
+  return { importId: openImport.importId };
+}
+
+/**
+ * The ONE place `GET /imports` is called, and the only writer of
+ * {@link probeCache}.
+ *
+ * Returns the response, or null when imports are UNAVAILABLE here. Two very
+ * different reasons answer null, and they are cached differently:
+ *  - a **404** — the server-side flag is off, and that is sticky for the app
+ *    session (the route is byte-identical to an unknown one);
+ *  - **no usable `allowances` map** — a pre-B#352 server, or one whose bucket
+ *    is malformed. NOT cached: the client cannot price an import it would
+ *    otherwise offer, but a deploy mid-session must be able to fix that
+ *    without a relaunch.
+ *
+ * Everything else RETHROWS, because caching a transient network failure as
+ * "unavailable" would hide the feature until the next launch.
+ *
+ * **Rule 0.** {@link liveToken} is captured BEFORE the request and re-checked
+ * after it: a wipe landing mid-GET must leave no allowance residue in the
+ * cache for the next account on this device, so every write is skipped and
+ * the answer is discarded.
+ */
+async function fetchGroupImports(
+  conversationId: string,
+  options?: { readonly cache?: boolean },
+): Promise<GroupImportsResponse | null> {
+  const cache = options?.cache ?? true;
+  const token = liveToken;
+
+  let response: GroupImportsResponse;
+  try {
+    response = await getGroupImports(conversationId);
+  } catch (e) {
+    if (e instanceof NotFoundError) {
+      if (cache && token === liveToken) probeCache.set(conversationId, UNAVAILABLE_IMPORTS);
+      return null;
+    }
+    throw e;
+  }
+
+  if (token !== liveToken) return null;
+
+  // Both buckets, not just the one the caller wants: the how-to screen prices
+  // either source off this answer, and a response that can only price one is
+  // not a response this client understands.
+  if (allowanceFor(response, 'facebook') === null || allowanceFor(response, 'instagram') === null) {
+    return null;
+  }
+
+  if (cache) {
+    probeCache.set(conversationId, {
+      available: true,
+      allowances: response.allowances,
+      limits: response.limits,
+    });
+  }
+  return response;
+}
 
 /**
  * Is importing available in this orbit, and under what allowance?
@@ -2446,27 +2713,15 @@ export async function probeImportAvailability(conversationId: string): Promise<I
   const cached = probeCache.get(conversationId);
   if (cached !== undefined) return cached;
 
-  try {
-    const response = await getGroupImports(conversationId);
-    const available: ImportAvailability = {
-      available: true,
-      allowance: response.allowance,
-      limits: response.limits,
-    };
-    probeCache.set(conversationId, available);
-    return available;
-  } catch (e) {
-    if (e instanceof NotFoundError) {
-      const unavailable: ImportAvailability = {
-        available: false,
-        allowance: null,
-        limits: null,
-      };
-      probeCache.set(conversationId, unavailable);
-      return unavailable;
-    }
-    throw e;
-  }
+  const response = await fetchGroupImports(conversationId);
+  // `fetchGroupImports` owns every cache write, so read the answer back from
+  // the cache when it made one: two callers in the same app session must get
+  // the SAME object, or `useSyncExternalStore` re-renders on identity alone.
+  const settled = probeCache.get(conversationId);
+  if (settled !== undefined) return settled;
+  return response === null
+    ? UNAVAILABLE_IMPORTS
+    : { available: true, allowances: response.allowances, limits: response.limits };
 }
 
 /**
@@ -2478,7 +2733,7 @@ export async function probeImportAvailability(conversationId: string): Promise<I
  */
 export async function pickAndStartParse(args: {
   conversationId: string;
-  source: ImportSource;
+  chooseSource: ChooseImportSource;
 }): Promise<PickParseResult> {
   const existing = getActiveImportJob();
   if (existing !== null) {
@@ -2514,12 +2769,39 @@ export async function pickAndStartParse(args: {
   try {
     archive = await openArchiveSession(tokens, { signal: controller.signal });
     if (stale(token, controller)) return { kind: 'cancelled' };
+
+    // WHICH platform's posts these files hold is the archive's answer, not a
+    // row the member tapped (#996): picking the wrong one used to end in a
+    // "nothing to import" dead end.
+    const detected = detectSources(archive.entries);
+    if (!detected.facebook && !detected.instagram) {
+      // No post JSON of either source. Distinct from `archive` — those files
+      // were READ fine, they just hold nothing importable, and the copy asks
+      // for a different export rather than for the same one again. Returned
+      // from inside the `try` so the `finally` closes the session and hands
+      // back the grant: no key session, no job row, and the store stays idle.
+      return { kind: 'failed', reason: 'no_posts' };
+    }
+
+    let source: ImportSource;
+    if (detected.facebook && detected.instagram) {
+      // Each job is single-source, so the member picks which one goes first;
+      // #996's summary then offers the other.
+      const chosen = await awaitSourceChoice(args.chooseSource, controller.signal);
+      if (chosen === null || stale(token, controller)) return { kind: 'cancelled' };
+      source = chosen;
+    } else {
+      source = detected.facebook ? 'facebook' : 'instagram';
+    }
+
     // Opened BEFORE the job row, because `key_fingerprint` is NOT NULL from
     // creation: a `ready` job's stored identities carry the generation stamp
-    // they were derived under (#921).
+    // they were derived under (#921). AFTER the choice, because the session
+    // is bound to one source: `source` is not in `K_import`, but it frames
+    // every per-item HMAC and rides in the sealed meta.
     keySession = await openImportKeySession({
       groupId: args.conversationId,
-      source: args.source,
+      source,
     });
     // The LAST await before the first write, and therefore the one rule 0
     // needs most: a wipe that lands while the group key is being fetched used
@@ -2531,7 +2813,7 @@ export async function pickAndStartParse(args: {
     createImportJob({
       id: jobId,
       conversationId: args.conversationId,
-      source: args.source,
+      source,
       keyFingerprint: keySession.keyFingerprint,
       createdAt: Date.now(),
     });
@@ -2543,7 +2825,7 @@ export async function pickAndStartParse(args: {
         phase: 'parsing',
         jobId,
         conversationId: args.conversationId,
-        source: args.source,
+        source,
         preflight: null,
         total: 0,
         created: 0,
@@ -2565,7 +2847,7 @@ export async function pickAndStartParse(args: {
     const preflight = await parseIntoJob({
       jobId,
       conversationId: args.conversationId,
-      source: args.source,
+      source,
       archive,
       keySession,
       token,
@@ -2624,6 +2906,44 @@ export async function pickAndStartParse(args: {
         await releaseArchiveParts(tokens).catch(() => {});
       }
     }
+  }
+}
+
+/**
+ * Ask the caller which source to import, or answer null.
+ *
+ * Raced against the parse's abort signal, because the chooser is a DIALOG:
+ * without the race, a wipe or a Cancel while it is up would wait for a member
+ * who may never answer, holding the archive session and the picker's grant.
+ * The listener is removed in a `finally` so a chooser that resolves normally
+ * leaves nothing attached to a controller that outlives it.
+ *
+ * Every unhappy answer collapses to null — a rejection, `undefined`, or a
+ * string this build does not know. A non-literal is the dangerous one: it
+ * would otherwise become a job row, a key session and an allowance bucket
+ * that do not exist.
+ */
+async function awaitSourceChoice(
+  choose: ChooseImportSource,
+  signal: AbortSignal,
+): Promise<ImportSource | null> {
+  if (signal.aborted) return null;
+
+  let onAbort: (() => void) | null = null;
+  try {
+    const aborted = new Promise<null>((resolve) => {
+      onAbort = (): void => resolve(null);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    const chosen = await Promise.race([
+      Promise.resolve()
+        .then(choose)
+        .catch(() => null),
+      aborted,
+    ]);
+    return chosen === 'facebook' || chosen === 'instagram' ? chosen : null;
+  } finally {
+    if (onAbort !== null) signal.removeEventListener('abort', onAbort);
   }
 }
 
@@ -2761,19 +3081,29 @@ async function parseIntoJob(args: {
   // the wipe deleted.
   if (args.token !== liveToken) return null;
 
-  const probe = await probeImportAvailability(args.conversationId);
-  if (probe.allowance === null || probe.limits === null) return null;
+  // A FRESH GET, never the cached probe: the how-to screen has usually filled
+  // that cache already, and a cached answer cannot see `open_import` — so the
+  // preflight would offer Import while the member's other-source session is
+  // still holding the one open slot (#996 correction 0.1). It sits strictly
+  // AFTER the rule-0 check above: a wipe mid-parse must spend no allowance
+  // call at all.
+  const response = await fetchGroupImports(args.conversationId);
+  if (response === null) return null;
+  const allowance = allowanceFor(response, args.source);
+  if (allowance === null) return null;
 
   const skips = countImportSkipsByReason(args.jobId);
   const preflight = buildPreflight({
     conversationId: args.conversationId,
-    allowance: probe.allowance,
-    limits: probe.limits,
+    source: args.source,
+    allowance,
+    limits: response.limits,
     importable: summary.importable,
     estimatedBytes,
     heldVideo: skips.held_video,
     skippedByReason: skips,
     summary,
+    openImport: response.openImport,
   });
 
   if (isPreflightRunnable(preflight)) {
@@ -2814,6 +3144,16 @@ export async function confirmAndRunImport(): Promise<void> {
   // whose counts can leave nothing to submit: `declared_posts` must be
   // `1..1000`, so running it would be answered `IMPORT_DECLARED_INVALID`.
   const preflight = draft.preflight;
+  // The ARCHIVE facts only. They are settled for this job's lifetime, so a
+  // cached answer is as good as a fresh one and refusing here saves a round
+  // trip.
+  //
+  // `otherOpenImport` is deliberately NOT asked here, even though
+  // `canStartFromPreflight` is what disables the button: that one can clear
+  // between two renders, and deciding it from a cached preflight would leave
+  // Import doing nothing until something else happened to republish. The
+  // unconditional rebuild inside `enterJob` re-asks the server, and that is
+  // the answer the run is gated on.
   if (preflight !== null && !isPreflightRunnable(preflight)) return;
   await enterPreRun(() => enterJob(job, { autoStart: true }));
 }
@@ -3081,6 +3421,153 @@ export function dismissImportSummary(): void {
   if (draft.phase !== 'done') return;
   clearLastSettledHeld();
   update({ ...INITIAL_STATE, phase: 'idle' }, true);
+}
+
+/**
+ * What {@link closeOtherImport} achieved (#996 §7.2).
+ *
+ * `closed-stale` is the honest middle: the other session IS closed, but the
+ * allowance we would re-price against could not be read, so the preflight on
+ * screen is still the old one. Re-tapping is safe — `/complete` is
+ * idempotent — which is why it is not folded into `failed`.
+ */
+export type CloseOtherImportResult = 'closed' | 'closed-stale' | 'failed' | 'cancelled';
+
+/**
+ * Close the member's OTHER-source import so this one can start (#996 §2).
+ *
+ * Reachable only from a `ready` job whose preflight carries
+ * `otherOpenImport`. That is what makes it safe: `session_id` is written only
+ * by `startImportJob` from `runJob`, so a `ready` job has no server session —
+ * no local job can be holding the id this closes, and the belt check below
+ * asserts it. The session may still be running on ANOTHER DEVICE, which is
+ * why the UI puts a confirm in front of this.
+ *
+ * It writes nothing to SQLite. The only local effect is a re-priced preflight
+ * and a dropped probe cache.
+ */
+export function closeOtherImport(): Promise<CloseOtherImportResult> {
+  // Captured at CALL time, like every other queued member action: the queue
+  // can wait, and everything below is checked against what was true when the
+  // member tapped.
+  const token = liveToken;
+  const gen = preRunGen;
+  const jobId = draft.jobId;
+  const conversationId = draft.conversationId;
+  const other = draft.preflight?.otherOpenImport ?? null;
+  // The CAPTURED summary, never null: re-pricing with `summary: null` would
+  // erase the parse's own answer — the date range, the file issues, the
+  // other-source hint — from a screen that is only being repriced.
+  const summary = draft.preflight?.summary ?? null;
+
+  // A refused or nothing-to-import preflight also sits at phase `ready` (its
+  // job is already `cancelled`), but the other session is not what blocks it:
+  // closing that session there would stop the member's other import for
+  // nothing. Only a runnable archive may reach the destructive call.
+  if (
+    draft.phase !== 'ready' ||
+    jobId === null ||
+    conversationId === null ||
+    other === null ||
+    draft.preflight === null ||
+    !isPreflightRunnable(draft.preflight)
+  ) {
+    return Promise.resolve('cancelled');
+  }
+
+  let result: CloseOtherImportResult = 'cancelled';
+  return queuePreRun(
+    async () => {
+      result = await closeOtherImportNow({
+        token,
+        gen,
+        jobId,
+        conversationId,
+        importId: other.importId,
+        summary,
+      });
+    },
+    () => preRunGen !== gen || liveToken !== token || draft.jobId !== jobId,
+  ).then(
+    () => result,
+    // `queuePreRun` rejects only when it could not take the gate: the close
+    // NEVER RAN. 'cancelled' would read as "nothing worth saying" and leave
+    // the member staring at an unchanged notice, so it is a failure they can
+    // retry.
+    () => 'failed' as const,
+  );
+}
+
+async function closeOtherImportNow(args: {
+  token: number;
+  gen: number;
+  jobId: string;
+  conversationId: string;
+  importId: string;
+  summary: ParseSummary | null;
+}): Promise<CloseOtherImportResult> {
+  const live = (): boolean =>
+    liveToken === args.token && preRunGen === args.gen && draft.jobId === args.jobId;
+  if (!live()) return 'cancelled';
+
+  // BELT: nothing of ours may be holding this id. A `ready` job never has a
+  // `session_id`, so this can only fail if the phase gate above was wrong —
+  // and closing a session our own run is draining would strand it.
+  const active = getActiveImportJob();
+  if (active !== null && active.session_id === args.importId) return 'cancelled';
+
+  try {
+    await completeImport(args.importId);
+  } catch (e) {
+    const refusal = e instanceof ConflictError ? e.importRefusal : undefined;
+    const closedAlready = refusal?.code === 'IMPORT_CLOSED';
+    // A 404 is a session that is not there to close, which is the outcome we
+    // wanted; anything else leaves it open and the member must try again.
+    if (!closedAlready && !(e instanceof NotFoundError)) return 'failed';
+  }
+  // From here the destructive call HAS landed, so it is never reported as a
+  // no-op: anything short of a re-priced preflight is `closed-stale`. The one
+  // exception is a wipe — the account that asked is gone, and nothing may be
+  // said to the next one.
+  const afterClose = (): CloseOtherImportResult =>
+    liveToken === args.token ? 'closed-stale' : 'cancelled';
+  if (!live()) return afterClose();
+
+  // The slot is free; what the member sees must now say so. `cache: false`
+  // would be wrong here — this IS the refresh.
+  let response: GroupImportsResponse | null;
+  try {
+    response = await fetchGroupImports(args.conversationId);
+  } catch {
+    response = null;
+  }
+  if (!live()) return afterClose();
+  const job = getActiveImportJob();
+  if (job === null || job.id !== args.jobId || job.status !== 'ready') return 'closed-stale';
+  const allowance = response === null ? null : allowanceFor(response, job.source);
+  // Closed, but we cannot re-price: the preflight on screen is still the old
+  // one, so Import stays disabled until something refreshes it.
+  if (response === null || allowance === null) return 'closed-stale';
+
+  const counts = countImportItemsByStatus(job.id);
+  const skips = countImportSkipsByReason(job.id);
+  const preflight = buildPreflight({
+    conversationId: args.conversationId,
+    source: job.source,
+    allowance,
+    limits: response.limits,
+    importable: job.declared_posts ?? importableTotal(counts),
+    estimatedBytes: job.declared_bytes ?? 0,
+    heldVideo: skips.held_video,
+    skippedByReason: skips,
+    summary: args.summary,
+    openImport: response.openImport,
+  });
+  update({ phase: 'ready', preflight, total: preflight.importable }, true);
+  // The allowance this orbit was priced against has just changed shape; the
+  // next probe must ask rather than answer from the pre-close snapshot.
+  probeCache.delete(args.conversationId);
+  return 'closed';
 }
 
 /**
@@ -3535,11 +4022,43 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
         );
         return;
       }
-      const limits = draft.preflight?.limits ?? (await rebuildPreflight(job))?.limits;
+      // UNCONDITIONAL, never `draft.preflight?.limits ?? …` (§7.2): the
+      // cached preflight cannot see `open_import`, and the whole point of
+      // asking again here is to find out whether the member's OTHER import
+      // took the one open slot since this job was priced.
+      const preflight = await rebuildPreflight(job);
       if (superseded()) return;
       // No fresh allowance means nothing honest to run against. The job is
       // untouched; `phase` still LEAVES `'hydrating'` so the UI can tell
       // "nothing running" from "not checked yet" (§4.3).
+      if (preflight !== null && preflight.otherOpenImport !== null) {
+        // A stale foreign session must NEVER destroy a parsed job: publish
+        // the repriced `ready` preflight and leave the row and its part grant
+        // exactly as they are. #996 offers to close the other import from
+        // here, and Import comes back the moment it is closed. Reaching
+        // `runJob` instead would burn this job on an `OTHER_IMPORT_OPEN`
+        // terminal it can simply wait out.
+        update(
+          {
+            phase: 'ready',
+            jobId: job.id,
+            conversationId: job.conversation_id,
+            source: job.source,
+            preflight,
+            total: preflight.importable,
+            skipped: counted(countImportSkipsByReason(job.id)),
+          },
+          true,
+        );
+        return;
+      }
+      // A rebuild that FAILED is not a reason to stop here. It swallows every
+      // error into null, so a 429 or a dropped connection would otherwise
+      // become the blocked view — losing the countdown and the automatic
+      // retry that #993's dropped-verdict fix put on this path. The run's own
+      // GET is a moment away and classifies the same failure properly, so
+      // fall through on the cached limits and let it.
+      const limits = preflight?.limits ?? draft.preflight?.limits;
       if (limits === undefined) {
         publishBlockedJob(job);
         return;
@@ -3569,10 +4088,12 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
 
     let limits: ImportLimits;
     let status: string;
+    let sessionSource: ImportSource | undefined;
     try {
       const session = await getImportSession(sessionId);
       limits = session.limits;
       status = session.status;
+      sessionSource = session.source;
     } catch (e) {
       // A 403 or 404 here is terminal: the session is not ours, or imports are
       // not available on this server at all.
@@ -3586,6 +4107,18 @@ async function enterJob(job: ImportJobRow, options: { autoStart: boolean }): Pro
     // already published and `cancelBeforeRun` owns the job. Running it anyway
     // is the race gap 9 exists for.
     if (superseded()) return;
+
+    // BELT, not the gate: this id came off our OWN job row, so a mismatch is
+    // not "someone else's session" — it is this client having written a
+    // session id of the wrong source, which no code path should be able to
+    // do. `CLIENT_BUG` says so honestly, and closing the session on settle is
+    // still correct because it IS ours.
+    if (sessionSource !== undefined && sessionSource !== job.source) {
+      const held = keySession;
+      keySession = null;
+      await failJobBeforeRun(job, held, null, 'CLIENT_BUG');
+      return;
+    }
 
     if (status === 'closed') {
       const held = keySession;

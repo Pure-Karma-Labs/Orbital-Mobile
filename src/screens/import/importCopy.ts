@@ -297,6 +297,13 @@ export const PICK_FAILURE_COPY: Readonly<Record<PickFailureReason, string>> = {
   archive:
     "Orbital couldn't read those files. Make sure you picked the ZIP files from " +
     'Meta, including every part, and that Format was JSON.',
+  // DISTINCT from `archive`: those files were read fine, they just hold no
+  // posts of either platform — so the ask is a different export, not the same
+  // one again (#996 §7.2).
+  no_posts:
+    "Orbital didn't find any Facebook or Instagram posts in those files. In " +
+    'Download your information, make sure Posts was selected and Format was ' +
+    'JSON, then pick every ZIP part.',
   key_pending: "This orbit's encryption key hasn't reached this phone yet. Try again in a minute.",
   network:
     "Couldn't reach the server to check your import allowance. Nothing was " +

@@ -185,6 +185,7 @@ const GROUP_KEYS = unionKeys<UnmigratedGroupKey>({
 
 const PICK_FAILURE_REASONS = unionKeys<PickFailureReason>({
   archive: true,
+  no_posts: true,
   key_pending: true,
   network: true,
   other: true,

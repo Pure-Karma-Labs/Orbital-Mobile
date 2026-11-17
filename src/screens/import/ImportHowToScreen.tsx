@@ -131,7 +131,15 @@ export function ImportHowToScreen(): React.JSX.Element {
 
     (async () => {
       try {
-        const result = await pickAndStartParse({ conversationId, source });
+        // TEMP (#996 Brief 2a): the runner now DETECTS the source and asks
+        // only when the archive holds both. This screen is still reached from
+        // a per-source row, so it pre-answers with that row's source — which
+        // is exactly what `preferredSource` will do once Brief 2a lands the
+        // real Alert chooser.
+        const result = await pickAndStartParse({
+          conversationId,
+          chooseSource: () => Promise.resolve(source),
+        });
         if (!mounted.current) return;
         switch (result.kind) {
           case 'preflight':

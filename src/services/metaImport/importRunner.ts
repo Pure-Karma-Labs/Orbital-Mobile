@@ -117,6 +117,7 @@ import {
   isRunStale,
 } from './importErrors';
 import { estimateImportBytes, importMediaStage, uploadImportItemMedia } from './importMedia';
+import { detectSources } from './layout';
 import { parseArchive } from './parseArchive';
 
 import type {
@@ -297,7 +298,16 @@ export interface ImportRunnerState {
  * Four arms, because #928's copy for them differs in what it asks the member
  * to DO: re-export as JSON, wait a minute, check the connection, or try again.
  */
-export type PickFailureReason = 'archive' | 'key_pending' | 'network' | 'other';
+export type PickFailureReason = 'archive' | 'no_posts' | 'key_pending' | 'network' | 'other';
+
+/**
+ * How the caller asks the member which source to import first.
+ *
+ * Only called when the archive holds BOTH (#996). `null` means they backed
+ * out — a cancel, not a failure. The runner races it against its own abort
+ * signal, so a wipe or a Cancel while the dialog is up settles it either way.
+ */
+export type ChooseImportSource = () => Promise<ImportSource | null>;
 
 /** What {@link pickAndStartParse} answers. A refusal is typed, never a throw. */
 export type PickParseResult =
@@ -2654,7 +2664,7 @@ export async function probeImportAvailability(conversationId: string): Promise<I
  */
 export async function pickAndStartParse(args: {
   conversationId: string;
-  source: ImportSource;
+  chooseSource: ChooseImportSource;
 }): Promise<PickParseResult> {
   const existing = getActiveImportJob();
   if (existing !== null) {
@@ -2690,12 +2700,39 @@ export async function pickAndStartParse(args: {
   try {
     archive = await openArchiveSession(tokens, { signal: controller.signal });
     if (stale(token, controller)) return { kind: 'cancelled' };
+
+    // WHICH platform's posts these files hold is the archive's answer, not a
+    // row the member tapped (#996): picking the wrong one used to end in a
+    // "nothing to import" dead end.
+    const detected = detectSources(archive.entries);
+    if (!detected.facebook && !detected.instagram) {
+      // No post JSON of either source. Distinct from `archive` — those files
+      // were READ fine, they just hold nothing importable, and the copy asks
+      // for a different export rather than for the same one again. Returned
+      // from inside the `try` so the `finally` closes the session and hands
+      // back the grant: no key session, no job row, and the store stays idle.
+      return { kind: 'failed', reason: 'no_posts' };
+    }
+
+    let source: ImportSource;
+    if (detected.facebook && detected.instagram) {
+      // Each job is single-source, so the member picks which one goes first;
+      // #996's summary then offers the other.
+      const chosen = await awaitSourceChoice(args.chooseSource, controller.signal);
+      if (chosen === null || stale(token, controller)) return { kind: 'cancelled' };
+      source = chosen;
+    } else {
+      source = detected.facebook ? 'facebook' : 'instagram';
+    }
+
     // Opened BEFORE the job row, because `key_fingerprint` is NOT NULL from
     // creation: a `ready` job's stored identities carry the generation stamp
-    // they were derived under (#921).
+    // they were derived under (#921). AFTER the choice, because the session
+    // is bound to one source: `source` is not in `K_import`, but it frames
+    // every per-item HMAC and rides in the sealed meta.
     keySession = await openImportKeySession({
       groupId: args.conversationId,
-      source: args.source,
+      source,
     });
     // The LAST await before the first write, and therefore the one rule 0
     // needs most: a wipe that lands while the group key is being fetched used
@@ -2707,7 +2744,7 @@ export async function pickAndStartParse(args: {
     createImportJob({
       id: jobId,
       conversationId: args.conversationId,
-      source: args.source,
+      source,
       keyFingerprint: keySession.keyFingerprint,
       createdAt: Date.now(),
     });
@@ -2719,7 +2756,7 @@ export async function pickAndStartParse(args: {
         phase: 'parsing',
         jobId,
         conversationId: args.conversationId,
-        source: args.source,
+        source,
         preflight: null,
         total: 0,
         created: 0,
@@ -2741,7 +2778,7 @@ export async function pickAndStartParse(args: {
     const preflight = await parseIntoJob({
       jobId,
       conversationId: args.conversationId,
-      source: args.source,
+      source,
       archive,
       keySession,
       token,
@@ -2800,6 +2837,44 @@ export async function pickAndStartParse(args: {
         await releaseArchiveParts(tokens).catch(() => {});
       }
     }
+  }
+}
+
+/**
+ * Ask the caller which source to import, or answer null.
+ *
+ * Raced against the parse's abort signal, because the chooser is a DIALOG:
+ * without the race, a wipe or a Cancel while it is up would wait for a member
+ * who may never answer, holding the archive session and the picker's grant.
+ * The listener is removed in a `finally` so a chooser that resolves normally
+ * leaves nothing attached to a controller that outlives it.
+ *
+ * Every unhappy answer collapses to null — a rejection, `undefined`, or a
+ * string this build does not know. A non-literal is the dangerous one: it
+ * would otherwise become a job row, a key session and an allowance bucket
+ * that do not exist.
+ */
+async function awaitSourceChoice(
+  choose: ChooseImportSource,
+  signal: AbortSignal,
+): Promise<ImportSource | null> {
+  if (signal.aborted) return null;
+
+  let onAbort: (() => void) | null = null;
+  try {
+    const aborted = new Promise<null>((resolve) => {
+      onAbort = (): void => resolve(null);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    const chosen = await Promise.race([
+      Promise.resolve()
+        .then(choose)
+        .catch(() => null),
+      aborted,
+    ]);
+    return chosen === 'facebook' || chosen === 'instagram' ? chosen : null;
+  } finally {
+    if (onAbort !== null) signal.removeEventListener('abort', onAbort);
   }
 }
 

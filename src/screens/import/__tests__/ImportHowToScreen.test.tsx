@@ -350,7 +350,14 @@ describe('ImportHowToScreen — pick results', () => {
     const renderer = await renderScreen();
     await tapAndSettle(renderer.root, 'import-choose-files');
 
-    expect(mockPick).toHaveBeenCalledWith({ conversationId: 'g1', source: 'facebook' });
+    // TEMP shape (#996 Brief 2a replaces it): the runner DETECTS the source
+    // now, so the screen passes a chooser that pre-answers with the row's
+    // source instead of naming it outright.
+    expect(mockPick).toHaveBeenCalledWith({
+      conversationId: 'g1',
+      chooseSource: expect.any(Function),
+    });
+    await expect(mockPick.mock.calls[0][0].chooseSource()).resolves.toBe('facebook');
     expect(mockReplace).toHaveBeenCalledTimes(1);
     expect(mockReplace).toHaveBeenCalledWith('ImportStatus');
   });
@@ -557,6 +564,13 @@ describe('ImportHowToScreen — the orbit comes from the route', () => {
     const renderer = await renderScreen();
     await tapAndSettle(renderer.root, 'import-choose-files');
 
-    expect(mockPick).toHaveBeenCalledWith({ conversationId: 'g1', source: 'facebook' });
+    // TEMP shape (#996 Brief 2a replaces it): the runner DETECTS the source
+    // now, so the screen passes a chooser that pre-answers with the row's
+    // source instead of naming it outright.
+    expect(mockPick).toHaveBeenCalledWith({
+      conversationId: 'g1',
+      chooseSource: expect.any(Function),
+    });
+    await expect(mockPick.mock.calls[0][0].chooseSource()).resolves.toBe('facebook');
   });
 });

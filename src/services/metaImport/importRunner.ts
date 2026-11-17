@@ -82,6 +82,7 @@ import {
   completeImport,
   getGroupImports,
   getImportSession,
+  lookupImportKeys,
   startImport,
   submitImportBatch,
 } from '../api/imports';
@@ -116,6 +117,7 @@ import {
   IMPORT_ITEM_FAILURE_CODES,
   isRunStale,
 } from './importErrors';
+import { applyLookupResponse, LOOKUP_PAGE_MAX, nextLookupPage } from './importLookup';
 import { estimateImportBytes, importMediaStage, uploadImportItemMedia } from './importMedia';
 import { detectSources } from './layout';
 import { OTHER_IMPORT_SOURCE } from './types';
@@ -179,6 +181,15 @@ export interface ImportSummary {
    */
   readonly otherSourceDetected: boolean;
   readonly created: number;
+  /**
+   * Posts that were already in this orbit: {@link ALREADY_IN_ORBIT_STATUSES}
+   * folded into one number.
+   *
+   * Both statuses say the same thing to the member — "we did not import this
+   * again, it is already here" — and they differ only in WHO noticed:
+   * `duplicate` is the server's answer to a submitted post, `present` is the
+   * #930 pre-check's, which caught it before anything was uploaded.
+   */
   readonly duplicate: number;
   readonly failed: number;
   /** Posts held for video, at parse time and at extract time together. */
@@ -251,6 +262,27 @@ export interface ImportPreflight {
   readonly nothingToImport: boolean;
   readonly heldVideo: number;
   readonly skippedByReason: Readonly<Record<SkipReason, number>>;
+  /**
+   * Posts of this archive the server's pre-check already holds in this orbit
+   * (#930), and which are therefore NOT in {@link importable},
+   * {@link estimatedBytes} or `declared_posts`.
+   *
+   * It is the one number #928's "N posts are already in this orbit" line is
+   * built from, and the reason the preflight can be `nothingToImport` for an
+   * archive that is full of perfectly importable posts. Zero whenever the
+   * pre-check did not run — an old server, a nothing-could-match orbit, a
+   * failed call — which is exactly the pre-#930 behaviour.
+   */
+  readonly alreadyPresent: number;
+  /**
+   * Media files belonging to those posts, so the photo count can be NET.
+   *
+   * Carried separately rather than derived, because `summary.importableMedia`
+   * is the parse's gross count and the preflight has no other way back to the
+   * per-post media of the rows that matched. 0 on every rebuilt preflight: the
+   * `ParseSummary` is not persisted, and neither is this.
+   */
+  readonly alreadyPresentMedia: number;
 }
 
 export interface ImportRunnerState {
@@ -2092,6 +2124,23 @@ function otherSourceDetectedFor(r: ActiveRun, archive: ArchiveImportSession | nu
   return draft.preflight?.summary?.otherSourceDetected === true;
 }
 
+/**
+ * The two statuses that mean "this post is already a thread in this orbit",
+ * and the ONE home for the fold (#930).
+ *
+ * `duplicate` is the server's verdict on a post this run submitted; `present`
+ * is the pre-check's, reached before anything was uploaded. The member is told
+ * one number, so any reader that reports "already in this orbit" sums these —
+ * exported so a second copy of the pair cannot drift from this one.
+ *
+ * It is deliberately NOT the set `importableTotal` or the progress counters
+ * use: see the note on {@link importableTotal}.
+ */
+export const ALREADY_IN_ORBIT_STATUSES: readonly ImportItemStatus[] = Object.freeze([
+  'duplicate',
+  'present',
+] as ImportItemStatus[]);
+
 function buildSummary(r: ActiveRun, otherSourceDetected: boolean): ImportSummary {
   const counts = countImportItemsByStatus(r.jobId);
   const skips = countImportSkipsByReason(r.jobId);
@@ -2109,12 +2158,19 @@ function buildSummary(r: ActiveRun, otherSourceDetected: boolean): ImportSummary
   // queued — the row stays `uploading`, which a later resume requeues — so the
   // honest line for it is `notSubmitted`, and that makes this identical to
   // {@link undrainedWork}: both exempt `r.held` and nothing else, so the six
-  // lines sum to the importable total in every ending.
+  // lines sum to `importableTotal(counts) + counts.present` in every ending.
+  //
+  // The `+ counts.present` is #930's whole arithmetic footprint here. A
+  // pre-checked post is NOT in `importableTotal` — nothing can submit it — but
+  // it IS on the "already in this orbit" line below, so the sum the member can
+  // do in their head needs that term. Every other line is untouched: `present`
+  // is neither `pending` nor `uploading`, so it cannot reach `notSubmitted`.
   return {
     source: r.source,
     otherSourceDetected,
     created: counts.created,
-    duplicate: counts.duplicate,
+    // ONE line for the two statuses — see {@link ALREADY_IN_ORBIT_STATUSES}.
+    duplicate: ALREADY_IN_ORBIT_STATUSES.reduce((sum, status) => sum + counts[status], 0),
     failed: counts.failed,
     // Parse-time holds and the post-extract ones are the same fact to the
     // member, reported separately from failures per the issue AC. `held.size`,
@@ -2442,6 +2498,17 @@ async function runJob(
   await settleRun(r);
 }
 
+/**
+ * The rows this client could still submit, or already has.
+ *
+ * An OPT-IN sum, listed status by status, and `present` is deliberately not
+ * among them: a pre-checked post (#930) is excluded from `declared_posts` and
+ * can never be submitted from this job, so counting it here would make `total`
+ * exceed what the run will ever do and leave progress short of 1.0 forever.
+ * `tsc` flags none of this — the parameter is a `Record<string, number>` — so
+ * every new `ImportItemStatus` has to be added here on purpose or it is simply
+ * absent.
+ */
 function importableTotal(counts: Record<string, number>): number {
   return (
     (counts.pending ?? 0) +
@@ -2474,12 +2541,22 @@ function buildPreflight(args: {
   source: ImportSource;
   allowance: ImportAllowance;
   limits: ImportLimits;
+  /** NET of {@link alreadyPresent}: this is what `declared_posts` becomes. */
   importable: number;
+  /** NET of the already-present posts' media. `declared_bytes`. */
   estimatedBytes: number;
   heldVideo: number;
   skippedByReason: Readonly<Record<SkipReason, number>>;
   summary: ParseSummary | null;
   openImport: OpenImportSummary | null;
+  /**
+   * Reported, never subtracted here. The netting happens at the call site,
+   * because the two parse-time counts and the two rebuilt ones come from
+   * different places: a rebuild reads `declared_posts`, which was ALREADY
+   * netted before it was persisted, so subtracting again would halve it.
+   */
+  alreadyPresent: number;
+  alreadyPresentMedia: number;
 }): ImportPreflight {
   const remainingPosts = Math.max(0, args.allowance.postsLimit - args.allowance.postsUsed);
   const remainingBytes = Math.max(0, args.allowance.bytesLimit - args.allowance.bytesUsed);
@@ -2505,6 +2582,8 @@ function buildPreflight(args: {
     nothingToImport: args.importable < 1,
     heldVideo: args.heldVideo,
     skippedByReason: args.skippedByReason,
+    alreadyPresent: args.alreadyPresent,
+    alreadyPresentMedia: args.alreadyPresentMedia,
   };
 }
 
@@ -2578,6 +2657,12 @@ async function rebuildPreflight(job: ImportJobRow): Promise<ImportPreflight | nu
     heldVideo: skips.held_video,
     skippedByReason: skips,
     summary: null,
+    // The rows the pre-check moved ARE persisted, so the count survives a
+    // relaunch and the "already in this orbit" line comes back with it. The
+    // per-post MEDIA count does not: it was derived from the archive's central
+    // directory during the parse, and the photo line falls back to gross.
+    alreadyPresent: counts.present,
+    alreadyPresentMedia: 0,
   });
 }
 
@@ -2978,9 +3063,136 @@ function pickFailureReason(e: unknown, controller: AbortController): PickFailure
   // A group-key wrap that has not reached this device yet clears itself; the
   // copy for it says so, where "try again" would be wrong.
   if (classifyImportCryptoError(e) === 'retryable-pause') return 'key_pending';
-  // The allowance probe is the one network call a parse makes.
+  // The allowance probe is the one network call a parse can FAIL on. The #930
+  // pre-check is the other call it makes, but it swallows everything it throws
+  // (see {@link runImportPreCheck}) precisely so that an optimisation can
+  // never be the reason a member is shown a network failure.
   if (e instanceof NetworkError || e instanceof ServerError) return 'network';
   return 'other';
+}
+
+/** What the #930 pre-check removed from this archive's two declared totals. */
+interface ImportPreCheck {
+  /** Posts moved to `present`. */
+  readonly present: number;
+  /** Their exact contribution to `estimatedBytes`. */
+  readonly bytes: number;
+  /** Their media files, for the NET photo count. */
+  readonly media: number;
+}
+
+const NO_PRE_CHECK: ImportPreCheck = Object.freeze({ present: 0, bytes: 0, media: 0 });
+
+/**
+ * Ask the server which of this archive's posts are already threads in this
+ * orbit, and move them to `present` (#930).
+ *
+ * The runner holds this rather than `importLookup.ts` because every decision
+ * in it is a decision about the RUN: whether to ask at all, what a failure
+ * means, and rule 0. The module does the paging and the SQL.
+ *
+ * ## It asks nothing at all when any of these hold
+ *
+ *  1. **No `limits.lookupMax`.** The server has no lookup route — including
+ *     production until the migration-050 deploy. The flag is the capability,
+ *     and a guessed page size against a route that answers the flag-gate 404
+ *     would spend a request per page to learn nothing.
+ *  2. **Neither source has used a post.** Every import thread is charged to
+ *     `posts_used`, and the only thing that lowers it is `admin:delete-import`,
+ *     which DELETES the threads it refunds. So `posts_used === 0` across both
+ *     sources means this member has no import thread in this orbit and nothing
+ *     can match. (That invariant is pinned by a comment in Orbital-Backend
+ *     `src/config/imports.js` as well; if a refund ever stops deleting the
+ *     threads, this skip is the thing it breaks.)
+ *  3. **The archive is refused even if EVERY post matched.** The most the
+ *     pre-check can remove from this source's bucket is the posts that bucket
+ *     has used, so `importable - postsUsed` is the best case; if that is still
+ *     over `remainingPosts` the refusal stands and the member is told the same
+ *     thing either way.
+ *
+ * ## Any throw means "no further matches"
+ *
+ * A 404 (old server, flag off), a network failure, a 5xx, a 429, a 400 or an
+ * auth error all end the pre-check where it stands and leave the rest of the
+ * archive `pending`. There is no retry, no pause and no terminal: this is an
+ * OPTIMISATION, and failing it costs the member the duplicate upload they
+ * would have paid before #930. It is deliberately outside the run taxonomy —
+ * `classifyImportFailure` answers what a run should do next, and there is no
+ * `ActiveRun` at parse time (the same reasoning as {@link pickFailureReason}).
+ *
+ * Pages already applied STAY applied: each page is its own transaction, and a
+ * post that is genuinely already in the orbit is still already in the orbit.
+ *
+ * **Rule 0** is re-asked before every request and before every apply, and the
+ * parse's `signal` is passed to the request so the member's Cancel aborts it
+ * in flight. Nothing here logs or captures (rule 35).
+ */
+async function runImportPreCheck(args: {
+  jobId: string;
+  conversationId: string;
+  response: GroupImportsResponse;
+  allowance: ImportAllowance;
+  importable: number;
+  costByOrdinal: ReadonlyMap<number, { bytes: number; media: number }>;
+  token: number;
+  signal: AbortSignal;
+}): Promise<ImportPreCheck> {
+  const lookupMax = args.response.limits?.lookupMax;
+  if (typeof lookupMax !== 'number' || !Number.isInteger(lookupMax) || lookupMax < 1) {
+    return NO_PRE_CHECK;
+  }
+
+  const facebook = allowanceFor(args.response, 'facebook');
+  const instagram = allowanceFor(args.response, 'instagram');
+  if (facebook === null || instagram === null) return NO_PRE_CHECK;
+  if (facebook.postsUsed + instagram.postsUsed === 0) return NO_PRE_CHECK;
+
+  // THIS job's source bucket, which is the one the archive is priced against.
+  const remainingPosts = Math.max(0, args.allowance.postsLimit - args.allowance.postsUsed);
+  if (args.importable - args.allowance.postsUsed > remainingPosts) return NO_PRE_CHECK;
+
+  const pageSize = Math.min(lookupMax, LOOKUP_PAGE_MAX);
+  let present = 0;
+  let bytes = 0;
+  let media = 0;
+  let afterOrdinal = -1;
+
+  try {
+    for (;;) {
+      if (args.token !== liveToken || args.signal.aborted) break;
+      const page = nextLookupPage(args.jobId, afterOrdinal, pageSize);
+      if (page.scanned === 0) break;
+      afterOrdinal = page.lastOrdinal;
+
+      if (page.rows.length > 0) {
+        if (args.token !== liveToken || args.signal.aborted) break;
+        const response = await lookupImportKeys(
+          args.conversationId,
+          { importKeys: page.rows.map((row) => row.importKeyWire) },
+          args.signal,
+        );
+        // Rule 0 again: a wipe landing mid-request must write no row for an
+        // account that has just been torn down.
+        if (args.token !== liveToken) break;
+        for (const row of applyLookupResponse(args.jobId, page, response)) {
+          present += 1;
+          const cost = args.costByOrdinal.get(row.ordinal);
+          if (cost !== undefined) {
+            bytes += cost.bytes;
+            media += cost.media;
+          }
+        }
+      }
+
+      // A short page is the last one; one more query would only prove it.
+      if (page.scanned < pageSize) break;
+    }
+  } catch {
+    // Any failure means "no further matches". Nothing is built from the error:
+    // its message could carry a key or a path.
+  }
+
+  return { present, bytes, media };
 }
 
 /**
@@ -3006,6 +3218,22 @@ async function parseIntoJob(args: {
   for (const entry of args.archive.entries) {
     if (entry.skip === null) declaredByEntry.set(entry.entryId, entry.declaredSize);
   }
+
+  /**
+   * What each importable post contributed to the two preflight totals, by
+   * `ordinal` (#930).
+   *
+   * LOCAL TO THIS CALL, and dropped on return like {@link declaredByEntry}: it
+   * is a parse-time index, not run state, and persisting it would be a second
+   * copy of numbers SQLite already answers.
+   *
+   * `bytes` is the EXACT contribution this post made to `estimatedBytes`,
+   * recorded at the one point where it is added — not re-derived afterwards —
+   * so subtracting it for an already-present post is the exact inverse and
+   * `declared_bytes` can never go negative against migration 046's
+   * `CHECK (>= 0)`.
+   */
+  const costByOrdinal = new Map<number, { bytes: number; media: number }>();
 
   const buffer: ImportItemInsert[] = [];
   let ordinal = 0;
@@ -3033,10 +3261,13 @@ async function parseIntoJob(args: {
       const index = ordinal;
       ordinal += 1;
       if (item.outcome === 'import') {
+        let itemBytes = 0;
         for (const media of item.media) {
           const declared = declaredByEntry.get(media.entryId);
-          if (declared !== undefined) estimatedBytes += estimateImportBytes(declared);
+          if (declared !== undefined) itemBytes += estimateImportBytes(declared);
         }
+        estimatedBytes += itemBytes;
+        costByOrdinal.set(index, { bytes: itemBytes, media: item.media.length });
         buffer.push({
           id: generateUUID(),
           ordinal: index,
@@ -3092,18 +3323,41 @@ async function parseIntoJob(args: {
   const allowance = allowanceFor(response, args.source);
   if (allowance === null) return null;
 
+  // The pre-check (#930), BEFORE the preflight is built: its verdict changes
+  // `declared_posts`, `declared_bytes` and whether the archive is refused at
+  // all, so a preflight built first would show the member numbers the run
+  // never uses.
+  const preCheck = await runImportPreCheck({
+    jobId: args.jobId,
+    conversationId: args.conversationId,
+    response,
+    allowance,
+    importable: summary.importable,
+    costByOrdinal,
+    token: args.token,
+    signal: args.signal,
+  });
+  // A wipe during the pre-check: no `setImportJobParsed` and no preflight for
+  // an account that is gone.
+  if (args.token !== liveToken) return null;
+
   const skips = countImportSkipsByReason(args.jobId);
   const preflight = buildPreflight({
     conversationId: args.conversationId,
     source: args.source,
     allowance,
     limits: response.limits,
-    importable: summary.importable,
-    estimatedBytes,
+    // NET of the pre-check, and clamped: these two become `declared_posts` and
+    // `declared_bytes`, whose migration-046 columns are `CHECK (>= 0)`, so a
+    // negative here would surface as a 500 rather than as a refusal.
+    importable: Math.max(0, summary.importable - preCheck.present),
+    estimatedBytes: Math.max(0, estimatedBytes - preCheck.bytes),
     heldVideo: skips.held_video,
     skippedByReason: skips,
     summary,
     openImport: response.openImport,
+    alreadyPresent: preCheck.present,
+    alreadyPresentMedia: preCheck.media,
   });
 
   if (isPreflightRunnable(preflight)) {
@@ -3459,6 +3713,13 @@ export function closeOtherImport(): Promise<CloseOtherImportResult> {
   // erase the parse's own answer — the date range, the file issues, the
   // other-source hint — from a screen that is only being repriced.
   const summary = draft.preflight?.summary ?? null;
+  // Captured for the same reason, and at the same moment (#930): the
+  // pre-check's verdict is a PARSE-TIME fact about this archive, and closing
+  // the other member's session says nothing about it. Re-deriving them here
+  // would drop the "already in this orbit" line and silently inflate the photo
+  // count back to gross on a screen that is only being repriced.
+  const alreadyPresent = draft.preflight?.alreadyPresent ?? 0;
+  const alreadyPresentMedia = draft.preflight?.alreadyPresentMedia ?? 0;
 
   // A refused or nothing-to-import preflight also sits at phase `ready` (its
   // job is already `cancelled`), but the other session is not what blocks it:
@@ -3485,6 +3746,8 @@ export function closeOtherImport(): Promise<CloseOtherImportResult> {
         conversationId,
         importId: other.importId,
         summary,
+        alreadyPresent,
+        alreadyPresentMedia,
       });
     },
     () => preRunGen !== gen || liveToken !== token || draft.jobId !== jobId,
@@ -3505,6 +3768,8 @@ async function closeOtherImportNow(args: {
   conversationId: string;
   importId: string;
   summary: ParseSummary | null;
+  alreadyPresent: number;
+  alreadyPresentMedia: number;
 }): Promise<CloseOtherImportResult> {
   const live = (): boolean =>
     liveToken === args.token && preRunGen === args.gen && draft.jobId === args.jobId;
@@ -3562,6 +3827,8 @@ async function closeOtherImportNow(args: {
     skippedByReason: skips,
     summary: args.summary,
     openImport: response.openImport,
+    alreadyPresent: args.alreadyPresent,
+    alreadyPresentMedia: args.alreadyPresentMedia,
   });
   update({ phase: 'ready', preflight, total: preflight.importable }, true);
   // The allowance this orbit was priced against has just changed shape; the
@@ -3751,7 +4018,16 @@ const PRE_RUN_UNMIGRATED_STATUSES: readonly ImportItemStatus[] = Object.freeze([
   'skipped' as ImportItemStatus,
 ]);
 
-/** Post-settle: everything that is not `created`/`duplicate`. */
+/**
+ * Post-settle: the statuses that mean "this post did not become a thread".
+ *
+ * An ALLOW-LIST, not "everything that is not `created`/`duplicate`", and the
+ * difference is now load-bearing: `present` (#930) is a post that IS in the
+ * orbit — it was simply already there — so it belongs on the "already in this
+ * orbit" line and must never appear on the "what didn't migrate" list. It is
+ * excluded here BY OMISSION, which `tsc` cannot check, so a new
+ * `ImportItemStatus` is opted in here deliberately or not at all.
+ */
 const SETTLED_UNMIGRATED_STATUSES: readonly ImportItemStatus[] = Object.freeze([
   'skipped',
   'failed',

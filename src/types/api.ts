@@ -910,6 +910,15 @@ export interface ImportLimits {
   /** `YYYY-MM-DD`; posts older than this are refused per item. */
   minDate: string;
   mediaContentClasses: MediaContentClass[];
+  /**
+   * Maximum `import_keys` per lookup request (`IMPORT_LOOKUP_MAX`, 1000).
+   *
+   * OPTIONAL, and that is the contract: it is also the CAPABILITY FLAG for
+   * `lookupImportKeys`. A server without the lookup route omits it, and a
+   * client that sees it absent must make no lookup call at all — not one
+   * capped at a guess. Read it, never hardcode it.
+   */
+  lookupMax?: number;
 }
 
 /** POST /api/groups/:groupId/imports request. All three fields are REQUIRED. */
@@ -973,6 +982,34 @@ export interface GroupImportsResponse {
    */
   openImport: OpenImportSummary | null;
   limits: ImportLimits;
+}
+
+/**
+ * POST /api/groups/:groupId/imports/lookup request.
+ *
+ * 1..`limits.lookupMax` keys, each the canonical padded base64 of 16 bytes
+ * (`importKeyToWire`). The server fails the WHOLE request with a bare 400 on
+ * any entry that does not parse, so the caller drops a malformed key locally
+ * rather than sending it. Duplicates inside one request are removed
+ * server-side, silently.
+ */
+export interface ImportLookupRequest {
+  importKeys: string[];
+}
+
+/**
+ * POST /api/groups/:groupId/imports/lookup → 200.
+ *
+ * The MATCHING keys only — never the submitted set echoed back, and no thread
+ * id or `created_at` beside them. A key comes back iff this member authored a
+ * thread with it in THIS orbit, whichever source it was imported under.
+ *
+ * ADVISORY, not authoritative: the server's batch dedup remains the backstop,
+ * and a thread deleted after it was imported reads as absent (and is imported
+ * and charged again, exactly as today).
+ */
+export interface ImportLookupResponse {
+  existing: string[];
 }
 
 /** GET /api/imports/:importId → 200. Owner-only; any status. */

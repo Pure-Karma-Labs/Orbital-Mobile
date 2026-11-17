@@ -34,6 +34,8 @@ import type {
   GroupImportsResponse,
   ImportBatchRequest,
   ImportBatchResponse,
+  ImportLookupRequest,
+  ImportLookupResponse,
   ImportSessionResponse,
   StartImportRequest,
   StartImportResponse,
@@ -82,6 +84,38 @@ export function getGroupImports(groupId: string): Promise<GroupImportsResponse> 
   return request<GroupImportsResponse>({
     method: 'GET',
     path: `/api/groups/${encodeURIComponent(groupId)}/imports`,
+    retryOn429: false,
+  });
+}
+
+/**
+ * POST /api/groups/:groupId/imports/lookup — which of these keys are already
+ * in this orbit.
+ *
+ * Read-only and group-scoped: `groupId` comes from the path and the author
+ * from the token, never from the body. A caller can only learn about threads
+ * THEY authored in an orbit they still belong to.
+ *
+ * The body goes through the client's camelCase→snake_case transform, so the
+ * wire carries `import_keys`. The response carries the matching keys only.
+ *
+ * Gated on `limits.lookupMax`: a server without the route omits it, and the
+ * caller must then not call this at all — the route would answer the
+ * flag-gate 404 (indistinguishable from an unknown route).
+ *
+ * `signal` is threaded through because the only caller runs this at PARSE
+ * time, where the member's Cancel must abort the request in flight.
+ */
+export function lookupImportKeys(
+  groupId: string,
+  data: ImportLookupRequest,
+  signal?: AbortSignal,
+): Promise<ImportLookupResponse> {
+  return request<ImportLookupResponse>({
+    method: 'POST',
+    path: `/api/groups/${encodeURIComponent(groupId)}/imports/lookup`,
+    body: data,
+    signal,
     retryOn429: false,
   });
 }

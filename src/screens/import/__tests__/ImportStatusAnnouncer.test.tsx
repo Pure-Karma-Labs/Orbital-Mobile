@@ -105,6 +105,8 @@ const RUNNABLE_PREFLIGHT: ImportPreflight = {
   remainingBytes: 2147482624,
   overAllowance: null,
   nothingToImport: false,
+  alreadyPresent: 0,
+  alreadyPresentMedia: 0,
   heldVideo: 0,
   skippedByReason: NO_SKIPS,
 };

@@ -1,12 +1,13 @@
 /**
- * Meta import API (#926) — the five JSON routes of B#315/B#317/B#318.
+ * Meta import API (#926) — the six JSON routes of B#315/B#317/B#318 plus the
+ * B#337 lookup.
  *
  * The two media routes live in `./media.ts` beside the ordinary chunked
  * upload they share a transport with.
  *
  * ## Flag gate
  *
- * All seven import routes are gated by `importsEnabled` BEFORE `authenticate`
+ * All eight import routes are gated by `importsEnabled` BEFORE `authenticate`
  * (Orbital-Backend `src/routes/imports.js`), so a server with `IMPORTS_ENABLED`
  * off answers 404 with a body byte-identical to an unknown route's.
  * `IMPORTS_ENABLED` is off in production today: a `NotFoundError` from any of

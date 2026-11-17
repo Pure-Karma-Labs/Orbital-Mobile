@@ -276,6 +276,8 @@ function makePreflight(over: Partial<ImportPreflight> = {}): ImportPreflight {
     remainingBytes: 1024 * 1024 * 1024,
     overAllowance: null,
     nothingToImport: false,
+    alreadyPresent: 0,
+    alreadyPresentMedia: 0,
     heldVideo: 0,
     skippedByReason: makeSkips(),
     ...over,

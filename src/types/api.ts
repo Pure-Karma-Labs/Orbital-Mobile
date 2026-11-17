@@ -879,14 +879,14 @@ export type ImportSourceWire = 'facebook' | 'instagram';
  * (`allowanceWire`, Orbital-Backend `src/services/importService.js`). The
  * limits are LIFETIME caps, not per-session ones: `postsUsed` counts every
  * post this member has ever imported into this orbit FROM THAT SOURCE
- * (B#352), so a member who has used 900 of 1000 Facebook posts can never
- * import a 200-post Facebook archive — and still has their whole Instagram
- * allowance.
+ * (B#352), so a member whose Facebook `postsUsed` sits just under `postsLimit`
+ * (`IMPORT_POSTS_LIMIT`) can never import a Facebook archive that would carry
+ * them past it — and still has their whole Instagram allowance.
  */
 export interface ImportAllowance {
   postsUsed: number;
   bytesUsed: number;
-  /** 1000 today (`IMPORT_POSTS_LIMIT`). Read it, never hardcode it. */
+  /** 5000 today (`IMPORT_POSTS_LIMIT`). Read it, never hardcode it. */
   postsLimit: number;
   /** 2 GiB today (`IMPORT_BYTES_LIMIT`). */
   bytesLimit: number;
@@ -923,7 +923,7 @@ export interface ImportLimits {
 
 /** POST /api/groups/:groupId/imports request. All three fields are REQUIRED. */
 export interface StartImportRequest {
-  /** 1..1000. Outside the range → 400 `IMPORT_DECLARED_INVALID`. */
+  /** `1..posts_limit`. Outside the range → 400 `IMPORT_DECLARED_INVALID`. */
   declaredPosts: number;
   /** 0..2 GiB, a safe integer. */
   declaredBytes: number;

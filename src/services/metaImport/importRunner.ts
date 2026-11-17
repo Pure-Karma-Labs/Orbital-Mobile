@@ -253,11 +253,11 @@ export interface ImportPreflight {
    * make every reader of `overAllowance` handle a case that has no
    * `remainingPosts`/`remainingBytes` meaning.
    *
-   * It is a refusal because `declared_posts` must be `1..1000`: a video-only
-   * Instagram export would otherwise send `declared_posts: 0`, be answered
-   * `400 IMPORT_DECLARED_INVALID`, and surface as `job-terminal('CLIENT_BUG')`
-   * plus a Sentry event for an archive that is simply empty of posts we can
-   * take.
+   * It is a refusal because `declared_posts` must be `1..posts_limit`: a
+   * video-only Instagram export would otherwise send `declared_posts: 0`, be
+   * answered `400 IMPORT_DECLARED_INVALID`, and surface as
+   * `job-terminal('CLIENT_BUG')` plus a Sentry event for an archive that is
+   * simply empty of posts we can take.
    */
   readonly nothingToImport: boolean;
   readonly heldVideo: number;
@@ -3396,7 +3396,8 @@ export async function confirmAndRunImport(): Promise<void> {
   // importable in it — already finished its job as `cancelled`. This is both
   // the belt for that and the whole gate for a `ready` job rebuilt at launch,
   // whose counts can leave nothing to submit: `declared_posts` must be
-  // `1..1000`, so running it would be answered `IMPORT_DECLARED_INVALID`.
+  // `1..posts_limit`, so running it would be answered
+  // `IMPORT_DECLARED_INVALID`.
   const preflight = draft.preflight;
   // The ARCHIVE facts only. They are settled for this job's lifetime, so a
   // cached answer is as good as a fresh one and refusing here saves a round

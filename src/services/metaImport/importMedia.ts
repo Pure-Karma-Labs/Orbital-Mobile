@@ -73,7 +73,7 @@
 import { markMediaUploaded, replaceMediaId } from '../../database/repositories/importRepository';
 import { generateUUID } from '../../utils/uuid';
 // The media-complete route's own client, shared with the ordinary upload path
-// rather than duplicated beside the five JSON routes in `api/imports.ts`: it is
+// rather than duplicated beside the six JSON routes in `api/imports.ts`: it is
 // ONE route, `POST /api/imports/:importId/media/complete`, and a second client
 // function for it would be a second place for its contract to drift.
 import { completeImportUpload } from '../api/media';

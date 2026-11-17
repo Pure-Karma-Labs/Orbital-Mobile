@@ -1262,8 +1262,8 @@ describe('the allowance gate', () => {
     const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     const preflight = result.kind === 'preflight' ? result.preflight : null;
-    // `declared_posts` must be 1..1000, so a video-only export would otherwise
-    // send 0, be answered 400 IMPORT_DECLARED_INVALID, and surface as
+    // `declared_posts` must be `1..posts_limit`, so a video-only export would
+    // otherwise send 0, be answered 400 IMPORT_DECLARED_INVALID, and surface as
     // `job-terminal('CLIENT_BUG')` plus a Sentry event for an archive that is
     // simply empty of posts we can take.
     expect(preflight?.nothingToImport).toBe(true);
@@ -1544,10 +1544,10 @@ describe('the import pre-check', () => {
     ['a 404 from a server without the route', new NotFoundError()],
     ['a network failure', new NetworkError('offline')],
     ['a 429', rateLimited(30_000)],
-    ['a 5xx', new ServerError('boom', 503)],
+    ['a 5xx', new ServerError(503, 'boom')],
     // A 400 is in this list on purpose: a request shape this build gets wrong
     // must degrade to today's behaviour, never stop the member's import.
-    ['a 400', new ValidationError('bad import_keys')],
+    ['a 400', new ValidationError(400, 'bad import_keys')],
   ])("falls back to today's behaviour on %s", async (_label, error) => {
     pricedArchive(2, 1);
     parseEmitting(2, { mediaPerPost: 1 });

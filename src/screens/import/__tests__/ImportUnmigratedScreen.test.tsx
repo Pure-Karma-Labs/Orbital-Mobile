@@ -199,6 +199,8 @@ const PREFLIGHT_WITH_FILE_ISSUES: ImportPreflight = {
   remainingBytes: 2147482624,
   overAllowance: null,
   nothingToImport: false,
+  alreadyPresent: 0,
+  alreadyPresentMedia: 0,
   heldVideo: 1,
   skippedByReason: NO_SKIPS,
 };

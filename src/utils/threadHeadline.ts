@@ -38,6 +38,21 @@ const MAX_HEADLINE_CODE_POINTS = 60;
  */
 const MIN_WORD_CUT = 30;
 
+/**
+ * How much of a collapsed line is ever expanded into code points.
+ *
+ * `Array.from` on the whole line allocates one string per code point, and a
+ * body is bounded only by the backend's ceiling — a single-line 100 kB post
+ * would build a 100 000-element array to read 60 characters off the front,
+ * once per row, during a list render.
+ *
+ * `4 * (MAX + 2)` UTF-16 units is a deliberate over-count: the widest code
+ * point is 2 units, so the prefix always holds at least `2 * (MAX + 2)` code
+ * points — more than the cap plus the one lookahead the word-boundary search
+ * needs. Nothing past it can change the answer.
+ */
+const MAX_PREFIX_UNITS = 4 * (MAX_HEADLINE_CODE_POINTS + 2);
+
 /** A body that is nothing but a URL, with no other text around it. */
 const WHOLE_URL_RE = new RegExp(`^${URL_PATTERN_SOURCE}$`, 'i');
 
@@ -155,8 +170,21 @@ function headlineFromText(text: string): string | null {
   const collapsed = line.replace(/\s+/g, ' ').trim();
   if (collapsed === '') return null;
 
-  const points = Array.from(collapsed);
-  if (points.length <= MAX_HEADLINE_CODE_POINTS) return collapsed;
+  // Expand a bounded PREFIX, never the whole line — see MAX_PREFIX_UNITS.
+  let end = MAX_PREFIX_UNITS;
+  if (collapsed.length > end) {
+    // Never end the prefix on a lone high surrogate: `Array.from` would turn
+    // it into an unpaired code point that could reach the output.
+    const lastUnit = collapsed.charCodeAt(end - 1);
+    if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) end -= 1;
+  }
+  const prefix = collapsed.length > end ? collapsed.slice(0, end) : collapsed;
+  const points = Array.from(prefix);
+
+  // Short enough to show whole — and that is only knowable when the prefix IS
+  // the line. A truncated prefix always holds more than the cap, so a line
+  // longer than it always needs an ellipsis.
+  if (prefix === collapsed && points.length <= MAX_HEADLINE_CODE_POINTS) return collapsed;
 
   // A word boundary, if there is one far enough in to leave a useful headline.
   for (let i = MAX_HEADLINE_CODE_POINTS; i >= MIN_WORD_CUT; i -= 1) {

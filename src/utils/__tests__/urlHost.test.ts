@@ -108,4 +108,15 @@ describe('extractUrlHost', () => {
     expect(extractUrlHost(undefined as unknown as string)).toBeNull();
     expect(extractUrlHost(42 as unknown as string)).toBeNull();
   });
+
+  it('refuses a percent-encoded host rather than showing the raw run', () => {
+    // `%2E` is a dot: this URL is served by evil.test, and nothing here
+    // percent-decodes. Showing the undecoded run would read as "paypal.com"
+    // followed by noise, so the caller gets null and falls back to "Link".
+    expect(extractUrlHost('https://paypal.com%2Eevil.test/')).toBeNull();
+    expect(extractUrlHost('https://paypal.com%2eevil.test/')).toBeNull();
+    expect(extractUrlHost('https://%65xample.com/')).toBeNull();
+    // The undecoded form is not quietly turned into the decoded host either.
+    expect(extractUrlHost('https://paypal.com%2Eevil.test/')).not.toBe('evil.test');
+  });
 });

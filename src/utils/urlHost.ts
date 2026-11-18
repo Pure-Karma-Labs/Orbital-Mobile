@@ -33,8 +33,15 @@ const AUTHORITY_RE = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i;
  * Characters that cannot appear in a host. A match means the input was not a
  * URL we can name a host for, so the caller gets null instead of a fragment of
  * one. (The brackets are stripped from an IPv6 literal before this test.)
+ *
+ * `%` is in the set because this function does NOT percent-decode, and a host
+ * that needs decoding is a spoof: `https://paypal.com%2Eevil.test/` is served
+ * by `evil.test` but would otherwise be shown as the whole run, which reads as
+ * `paypal.com` followed by noise. Returning null makes the caller fall back to
+ * "Link". An IPv6 zone id (`[fe80::1%25eth0]`) is the only legitimate host
+ * with a percent in it, and it is not something a shared post carries.
  */
-const NOT_A_HOST_RE = /[\s/?#@[\]:]/;
+const NOT_A_HOST_RE = /[\s/?#@[\]:%]/;
 
 /**
  * The host of `url`, lowercased, or `null` when it has none.

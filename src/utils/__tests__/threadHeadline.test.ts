@@ -286,3 +286,51 @@ describe('threadHeadline — the fallback', () => {
     expect(() => threadHeadline(input({ mediaCount: undefined as unknown as null }))).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bounded expansion, and the percent-encoded host
+// ---------------------------------------------------------------------------
+
+describe('threadHeadline — long lines are not expanded whole', () => {
+  // The function only ever expands a bounded prefix of the collapsed line
+  // (MAX_PREFIX_UNITS). These pin that the bound cannot change the answer.
+  it('gives a 10,000-character single-line body the same headline as a short one', () => {
+    const long = 'word '.repeat(2000);
+    const short = 'word '.repeat(60);
+    expect(long.length).toBe(10_000);
+
+    const headline = threadHeadline(input({ body: long }));
+
+    expect(headline).toBe(threadHeadline(input({ body: short })));
+    // 59 characters cut at a word boundary, plus the ellipsis.
+    expect(headline).toBe(`${'word '.repeat(12).trimEnd()}…`);
+    expect(codePoints(headline as string)).toBe(60);
+  });
+
+  it('cuts cleanly when the 60th and 61st code points are astral', () => {
+    // No spaces at all, so the hard-cut path runs, and the pair sits exactly
+    // on the cap.
+    const body = `${'a'.repeat(59)}😀😀${'b'.repeat(200)}`;
+
+    const headline = threadHeadline(input({ body })) as string;
+
+    expect(headline).toBe(`${'a'.repeat(59)}😀…`);
+    expect(hasLoneSurrogate(headline)).toBe(false);
+    expect(codePoints(headline)).toBe(61);
+  });
+
+  it('never ends its prefix on half a surrogate pair', () => {
+    // The leading 'a' puts every pair on an odd UTF-16 offset, so the prefix
+    // boundary lands between a pair's two units.
+    const body = `a${'😀'.repeat(200)}`;
+
+    const headline = threadHeadline(input({ body })) as string;
+
+    expect(hasLoneSurrogate(headline)).toBe(false);
+    expect(headline).toBe(`a${'😀'.repeat(59)}…`);
+  });
+
+  it('falls back to Link for a body that is a percent-encoded host', () => {
+    expect(threadHeadline(input({ body: 'https://paypal.com%2Eevil.test/' }))).toBe('Link');
+  });
+});

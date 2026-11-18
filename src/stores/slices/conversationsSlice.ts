@@ -1,16 +1,21 @@
 import type { StateCreator } from 'zustand';
+import { compareConversationsByRecencyDesc } from '../../utils/conversationOrder';
 import type {
   AppState,
   Conversation,
   ConversationsSlice,
 } from '../../types/store';
 
-/** Sort comparator: most recently active conversations first */
-function sortByLastMessage(a: Conversation, b: Conversation): number {
-  const aTime = a.lastMessageAt ?? 0;
-  const bTime = b.lastMessageAt ?? 0;
-  return bTime - aTime;
-}
+/**
+ * Sort comparator: most recently active conversations first.
+ *
+ * One definition, shared with `ChatsListScreen` (#927). It used to be a local
+ * `lastMessageAt ?? 0`, which sank an import-only orbit — the server reports
+ * `last_message_at: null` for one by design — to the bottom of the list for
+ * ever. The fallback is the row's own `createdAt` (the member's join time) and
+ * is SORT-ONLY: the stored null is never written over.
+ */
+const sortByLastMessage = compareConversationsByRecencyDesc;
 
 export const createConversationsSlice: StateCreator<
   AppState,

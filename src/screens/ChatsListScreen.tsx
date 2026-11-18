@@ -21,6 +21,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { IFuseOptions } from 'fuse.js';
 import { useTheme } from '../theme';
 import { useConversations, useContacts } from '../stores';
+import { compareConversationsByRecencyDesc } from '../utils/conversationOrder';
 import type { Conversation } from '../types/store';
 import type { ChatsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
@@ -130,11 +131,10 @@ export function ChatsListScreen({ navigation }: ChatsListScreenProps): React.JSX
 
   const dmConversations = useMemo((): Conversation[] => {
     const dms = Object.values(conversations).filter((c) => c.type === 'direct');
-    return dms.sort((a, b) => {
-      const aTime = a.lastMessageAt ?? a.createdAt;
-      const bTime = b.lastMessageAt ?? b.createdAt;
-      return bTime - aTime;
-    });
+    // The shared comparator (#927) applies exactly the rule this list used to
+    // spell out inline, so the visible order is unchanged — it is now the same
+    // rule the store sorts `conversationIds` by.
+    return dms.sort(compareConversationsByRecencyDesc);
   }, [conversations]);
 
   // A blocked peer's DM disappears from this list until they are unblocked

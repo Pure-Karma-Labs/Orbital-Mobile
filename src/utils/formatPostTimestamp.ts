@@ -27,7 +27,7 @@
  *   formatPostTimestamp(t)       // "Sep 12, 3:04 PM" / "Sep 12, 2025, 3:04 PM"
  *   formatPostTimestampA11y(t)   // "September 12 at 3:04 PM"
  *   formatShortTime(t)           // "3:04 PM"
- *   formatDayLabel(t)            // "Today" / "Yesterday" / "Sep 12"
+ *   formatDayLabel(t)            // "Today" / "Yesterday" / "Sep 12" / "Jun 1, 2014"
  *   formatCompactTimestamp(t)    // "3:04 PM" (today) / "Yesterday" / "Sep 12"
  *   formatDateWithYear(t)        // "Mar 4, 2019"
  *   formatDateWithYearA11y(t)    // "March 4, 2019"
@@ -253,19 +253,27 @@ export function formatShortTime(timestamp: number): string {
 }
 
 /**
- * Day-separator label: "Today", "Yesterday", otherwise "Sep 12". Local
- * calendar-day comparison via dayBucket.
+ * Day-separator label: "Today", "Yesterday", "Sep 12" in the current year, and
+ * "Jun 1, 2014" in any other year. Local calendar-day comparison via dayBucket.
  *
- * Never shows a year — en-US output is pinned to the pre-#845 strings, so an
- * other-year date still reads "Jan 5". A year branch is a possible later
- * refinement, not a bug.
+ * The year branch is #919: a list can hold content from any year — an imported
+ * post from 2014, or a DM scrolled back past a year boundary — and a bare
+ * "Jun 1" over those rows claims a date that is eleven years off. The year is
+ * still dropped in the current year, where it would be noise, so the everyday
+ * separator is unchanged.
+ *
+ * The year uses the SHORT month, like every other header. It is chosen on the
+ * same `isCurrentYear` test {@link formatPostTimestamp} uses, so the separator
+ * and the timestamps under it agree on when a year is worth showing — including
+ * for an unrenderable `now`, where neither can name the current year and both
+ * show it.
  *
  * @param timestamp Epoch milliseconds.
  * @param now Epoch milliseconds that define "today". Defaults to Date.now();
  *   exists so tests can pin it.
  *
  * @example
- *   formatDayLabel(t)   // "Today" / "Yesterday" / "Sep 12"
+ *   formatDayLabel(t)   // "Today" / "Yesterday" / "Sep 12" / "Jun 1, 2014"
  *   formatDayLabel(NaN) // ""
  */
 export function formatDayLabel(timestamp: number, now: number = Date.now()): string {
@@ -275,7 +283,8 @@ export function formatDayLabel(timestamp: number, now: number = Date.now()): str
   const bucket = dayBucket(timestamp, now);
   if (bucket === 'today') return 'Today';
   if (bucket === 'yesterday') return 'Yesterday';
-  return shortDate(parts);
+  if (isCurrentYear(parts.year, now)) return shortDate(parts);
+  return `${shortDate(parts)}, ${parts.year}`;
 }
 
 /**

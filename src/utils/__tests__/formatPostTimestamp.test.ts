@@ -243,8 +243,32 @@ describe('formatDayLabel', () => {
     expect(formatDayLabel(mar7, mar8)).toBe('Yesterday');
   });
 
-  it('never shows a year, even for another year', () => {
-    expect(formatDayLabel(SEP_12_2025, NOW_2026)).toBe('Sep 12');
+  // #919. The two branches of the year rule, pinned together: dropping the
+  // year is correct only in the current year, and the same fixture read from
+  // two different `now`s is what proves the branch is the year and not the
+  // date.
+  it('omits the year for an other-day date in the current year', () => {
+    expect(formatDayLabel(SEP_12_2026, NOW_2026)).toBe('Sep 12');
+  });
+
+  it('shows the year for a date outside the current year', () => {
+    expect(formatDayLabel(SEP_12_2025, NOW_2026)).toBe('Sep 12, 2025');
+    // Far enough back that a bare "Jun 1" would be eleven years wrong — the
+    // imported-post case #919 was filed for.
+    expect(formatDayLabel(localTime(2014, 5, 1, 9, 0), NOW_2026)).toBe('Jun 1, 2014');
+    // A FUTURE year takes the same branch.
+    expect(formatDayLabel(SEP_12_2026, NOW_2025)).toBe('Sep 12, 2026');
+    expect(formatDayLabel(SEP_12_2025, NOW_2025)).toBe('Sep 12');
+  });
+
+  // The boundary the DM-scrollback case lands on: the two relative words win
+  // over the year branch even when they straddle New Year, and the first day
+  // that is neither picks the year up.
+  it('keeps Today/Yesterday across a year boundary and dates the day before', () => {
+    const jan2 = localTime(2026, 0, 2, 8, 0);
+    expect(formatDayLabel(localTime(2026, 0, 2, 1, 0), jan2)).toBe('Today');
+    expect(formatDayLabel(localTime(2026, 0, 1, 23, 0), jan2)).toBe('Yesterday');
+    expect(formatDayLabel(localTime(2025, 11, 31, 22, 0), jan2)).toBe('Dec 31, 2025');
   });
 
   it('shows the short date for a future day rather than a relative word', () => {
@@ -255,9 +279,12 @@ describe('formatDayLabel', () => {
     expect(formatDayLabel(NaN, NOW_2026)).toBe('');
     expect(() => formatDayLabel(SEP_12_2026, NaN)).not.toThrow();
     // Finite but unrenderable: resolveNow passes it through, so no day matches
-    // and the label falls through to the short date rather than claiming 'Today'.
+    // and the label falls through to a date rather than claiming 'Today'. With
+    // no readable current year it shows the year — the same tolerance
+    // formatPostTimestamp has, through the same isCurrentYear.
     expect(() => formatDayLabel(SEP_12_2026, 1e20)).not.toThrow();
-    expect(formatDayLabel(SEP_12_2026, 1e20)).toBe('Sep 12');
+    expect(formatDayLabel(SEP_12_2026, 1e20)).toBe('Sep 12, 2026');
+    expect(formatPostTimestamp(SEP_12_2026, 1e20)).toBe('Sep 12, 2026, 3:04 PM');
   });
 
   it('defaults now to the real clock when it is omitted', () => {
@@ -434,11 +461,13 @@ describe('the zone parameter is additive', () => {
     // toParts(ts, zone) gained a parameter that defaults to 'local'. The
     // formatters that predate #928 pass no zone, so they must still split a
     // UTC-midnight instant by the DEVICE calendar — and their pinned en-US
-    // strings must be byte-identical to before.
+    // strings must be byte-identical to before. (formatDayLabel's other-year
+    // string gained a year in #919; its zone did not change, which is what
+    // this suite is about.)
     expect(formatPostTimestamp(SEP_12_2026, NOW_2026)).toBe('Sep 12, 3:04 PM');
     expect(formatPostTimestampA11y(SEP_12_2025, NOW_2026)).toBe('September 12, 2025 at 3:04 PM');
     expect(formatShortTime(MIDNIGHT_2026)).toBe('12:00 AM');
-    expect(formatDayLabel(SEP_12_2025, NOW_2026)).toBe('Sep 12');
+    expect(formatDayLabel(SEP_12_2025, NOW_2026)).toBe('Sep 12, 2025');
     expect(formatCompactTimestamp(SEP_12_2026, NOW_2026)).toBe('Sep 12');
     expect(localDayKey(SINGLE_DIGIT_MINUTE_2026)).toBe('2026-01-05');
     // The new formatters default to the same calendar as the old ones.

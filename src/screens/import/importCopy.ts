@@ -85,6 +85,29 @@ export const SOURCE_LABEL: Readonly<Record<ImportSource, string>> = {
 };
 
 /**
+ * The neutral inbox tray (OpenMoji U+1F4E5), on every surface that marks
+ * something as imported: the Settings rows, and — since #927 — an imported
+ * thread's row and its detail caption.
+ *
+ * It describes the ACTION rather than the platform, so nothing carries a Meta
+ * mark. That is the brand rule for this flow, and it is also why one glyph
+ * serves both sources.
+ */
+export const IMPORT_GLYPH = '1F4E5';
+
+/**
+ * What an imported thread says about where it came from (#927 §8).
+ *
+ * `null` — no envelope, or one that did not open — is a real and expected
+ * state, not an error to surface: the thread IS an import, and the source is
+ * the only part we cannot name. "Imported post" says exactly that much.
+ */
+export function describeImportedLabel(source: ImportSource | null): string {
+  if (source === null) return 'Imported post';
+  return `Imported from ${SOURCE_LABEL[source]}`;
+}
+
+/**
  * The OTHER platform's display name — "This export also has {other} posts."
  *
  * The mapping itself lives in `metaImport/types` (#996): the runner decides

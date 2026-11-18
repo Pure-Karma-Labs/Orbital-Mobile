@@ -89,7 +89,7 @@ import {
   importKeyToWire,
   ImportUserIdError,
   openImportKeySession,
-  openImportMeta,
+  openImportMetaWithKey,
   parseImportMetaPlaintext,
 } from '../importCrypto';
 
@@ -420,7 +420,7 @@ describe('session lifecycle', () => {
 // Sealing and opening
 // ---------------------------------------------------------------------------
 
-describe('sealImportMeta / openImportMeta', () => {
+describe('sealImportMeta', () => {
   const POST_DATE = 1345982400000;
 
   it('seals the exact v1 plaintext and round-trips it through the real cipher', async () => {
@@ -430,7 +430,7 @@ describe('sealImportMeta / openImportMeta', () => {
     expect(encryptedImportMeta.length).toBeLessThanOrEqual(1024);
     expect(importMetaIv.length).toBeLessThanOrEqual(64);
 
-    const opened = await openImportMeta(encryptedImportMeta, importMetaIv, GROUP_ID);
+    const opened = openImportMetaWithKey(encryptedImportMeta, importMetaIv, key(0x42), GROUP_ID);
     expect(opened).toEqual({ v: 1, source: 'facebook', originalCreatedAt: POST_DATE });
     session.close();
   });
@@ -439,13 +439,13 @@ describe('sealImportMeta / openImportMeta', () => {
     const session = await open({ source: 'instagram' });
     const sealed = await session.sealImportMeta(POST_DATE);
 
-    expect(await openImportMeta(sealed.encryptedImportMeta, sealed.importMetaIv, GROUP_ID)).toEqual(
-      {
-        v: 1,
-        source: 'instagram',
-        originalCreatedAt: POST_DATE,
-      },
-    );
+    expect(
+      openImportMetaWithKey(sealed.encryptedImportMeta, sealed.importMetaIv, key(0x42), GROUP_ID),
+    ).toEqual({
+      v: 1,
+      source: 'instagram',
+      originalCreatedAt: POST_DATE,
+    });
     session.close();
   });
 
@@ -506,47 +506,140 @@ describe('sealImportMeta / openImportMeta', () => {
     session.close();
   });
 
-  it('raises ImportMetaAuthError — not null — when one ciphertext byte is flipped', async () => {
-    const session = await open();
-    const { encryptedImportMeta, importMetaIv } = await session.sealImportMeta(POST_DATE);
-    session.close();
+  // The tamper, truncated-base64 and not-a-v1-envelope cases live with
+  // `openImportMetaWithKey` below: they are properties of OPENING an envelope,
+  // and that is the only opener now that the key-fetching wrapper is gone.
+});
 
+// ---------------------------------------------------------------------------
+// openImportMetaWithKey — the #927 read path
+// ---------------------------------------------------------------------------
+
+describe('openImportMetaWithKey', () => {
+  const POST_DATE = 1345982400000;
+  const GROUP_KEY = key(0x42);
+
+  /** The mocked contentCrypto module object, for spying on decryptContent. */
+  function contentCryptoMock(): {
+    decryptContent: (c: string, iv: string, k: Uint8Array, g: string) => string;
+    encryptContent: (p: string, k: Uint8Array, g: string) => { ciphertext: string; iv: string };
+  } {
+    return jest.requireMock('../contentCrypto');
+  }
+
+  async function seal(): Promise<{ encryptedImportMeta: string; importMetaIv: string }> {
+    const session = await open();
+    try {
+      return await session.sealImportMeta(POST_DATE);
+    } finally {
+      session.close();
+    }
+  }
+
+  it('round-trips a sealed envelope with a key the caller already holds', async () => {
+    const { encryptedImportMeta, importMetaIv } = await seal();
+
+    expect(openImportMetaWithKey(encryptedImportMeta, importMetaIv, GROUP_KEY, GROUP_ID)).toEqual({
+      v: 1,
+      source: 'facebook',
+      originalCreatedAt: POST_DATE,
+    });
+  });
+
+  it('never fetches a group key of its own', async () => {
+    const { encryptedImportMeta, importMetaIv } = await seal();
+    mockGetOrFetchGroupKey.mockClear();
+
+    openImportMetaWithKey(encryptedImportMeta, importMetaIv, GROUP_KEY, GROUP_ID);
+
+    expect(mockGetOrFetchGroupKey).not.toHaveBeenCalled();
+  });
+
+  it('raises ImportMetaAuthError when a ciphertext byte is flipped', async () => {
+    const { encryptedImportMeta, importMetaIv } = await seal();
     const bytes = Buffer.from(encryptedImportMeta, 'base64');
     bytes[0] ^= 0x01;
-    const tampered = bytes.toString('base64');
 
-    const error = await openImportMeta(tampered, importMetaIv, GROUP_ID).catch((e: unknown) => e);
-    // A tamper signal. `null` is reserved for "authenticated, but not a v1
-    // envelope", and conflating the two would hide a forged envelope.
+    expect(() =>
+      openImportMetaWithKey(bytes.toString('base64'), importMetaIv, GROUP_KEY, GROUP_ID),
+    ).toThrow(ImportMetaAuthError);
+  });
+
+  it('raises ImportMetaAuthError for an envelope sealed under a different orbit (AAD)', async () => {
+    const { encryptedImportMeta, importMetaIv } = await seal();
+
+    // Same key, same bytes, different AAD: the GCM tag no longer verifies.
+    // This is the binding the #988 review called out — it holds WITHIN an
+    // orbit, not between orbits.
+    const error = ((): unknown => {
+      try {
+        return openImportMetaWithKey(encryptedImportMeta, importMetaIv, GROUP_KEY, 'orbit-2');
+      } catch (e) {
+        return e;
+      }
+    })();
     expect(error).toBeInstanceOf(ImportMetaAuthError);
     expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
   });
 
-  it('raises ImportMetaAuthError on a truncated or unparseable envelope', async () => {
-    await expect(openImportMeta('AAAA', 'AAAAAAAAAAAAAAAA', GROUP_ID)).rejects.toThrow(
+  it('raises ImportMetaAuthError for a wrong key', async () => {
+    const { encryptedImportMeta, importMetaIv } = await seal();
+
+    expect(() =>
+      openImportMetaWithKey(encryptedImportMeta, importMetaIv, key(0x17), GROUP_ID),
+    ).toThrow(ImportMetaAuthError);
+  });
+
+  it('raises ImportMetaAuthError on undecodable base64', () => {
+    expect(() => openImportMetaWithKey('AAAA', 'AAAAAAAAAAAAAAAA', GROUP_KEY, GROUP_ID)).toThrow(
       ImportMetaAuthError,
     );
   });
 
-  it('returns null for ciphertext that authenticates but is not a v1 envelope', async () => {
-    const { encryptContent } = jest.requireMock('../contentCrypto') as {
-      encryptContent: (p: string, k: Uint8Array, g: string) => { ciphertext: string; iv: string };
-    };
-    const sealed = encryptContent(JSON.stringify({ v: 2 }), key(0x42), GROUP_ID);
+  it('returns null for ciphertext that authenticates but is not a v1 envelope', () => {
+    const sealed = contentCryptoMock().encryptContent(
+      JSON.stringify({ v: 2, source: 'facebook', originalCreatedAt: POST_DATE }),
+      GROUP_KEY,
+      GROUP_ID,
+    );
 
-    await expect(openImportMeta(sealed.ciphertext, sealed.iv, GROUP_ID)).resolves.toBeNull();
+    expect(openImportMetaWithKey(sealed.ciphertext, sealed.iv, GROUP_KEY, GROUP_ID)).toBeNull();
   });
 
+  // The caps are the reason this function is safe to call once per row of a
+  // 50-row page: an oversize value must be refused BEFORE anything decodes it.
   it.each([
-    ['a pending wrap', () => new PendingWrapError()],
-    ['an unopenable envelope', () => new GroupKeyUnwrapError('no_envelope', 'requested')],
-  ])('propagates %s from the group-key fetch unchanged', async (_label, makeError) => {
-    const thrown = makeError();
-    mockGetOrFetchGroupKey.mockRejectedValue(thrown);
+    ['an over-cap envelope', 'A'.repeat(1025), 'AAAAAAAAAAAAAAAA'],
+    ['an over-cap IV', 'AAAA', 'A'.repeat(65)],
+    ['an empty envelope', '', 'AAAAAAAAAAAAAAAA'],
+    ['an empty IV', 'AAAA', ''],
+  ])('refuses %s without calling decryptContent', (_label, sealed, iv) => {
+    const spy = jest.spyOn(contentCryptoMock(), 'decryptContent');
 
-    const error = await openImportMeta('AAAA', 'AAAA', GROUP_ID).catch((e: unknown) => e);
-    expect(error).toBe(thrown);
-    expect(classifyImportCryptoError(error)).toBe('retryable-pause');
+    expect(() => openImportMetaWithKey(sealed, iv, GROUP_KEY, GROUP_ID)).toThrow(
+      ImportMetaAuthError,
+    );
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('accepts an envelope exactly AT the cap (the caps are not off by one)', () => {
+    // Non-vacuity for the test above: a value one byte shorter than the
+    // rejected one reaches decryptContent and fails on its MAC instead.
+    const spy = jest.spyOn(contentCryptoMock(), 'decryptContent');
+
+    expect(() =>
+      openImportMetaWithKey('A'.repeat(1024), 'A'.repeat(64), GROUP_KEY, GROUP_ID),
+    ).toThrow(ImportMetaAuthError);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the caller\'s key and the groupId straight through as the AAD', async () => {
+    const { encryptedImportMeta, importMetaIv } = await seal();
+    const spy = jest.spyOn(contentCryptoMock(), 'decryptContent');
+
+    openImportMetaWithKey(encryptedImportMeta, importMetaIv, GROUP_KEY, GROUP_ID);
+
+    expect(spy).toHaveBeenCalledWith(encryptedImportMeta, importMetaIv, GROUP_KEY, GROUP_ID);
   });
 });
 

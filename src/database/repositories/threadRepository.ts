@@ -30,11 +30,15 @@ import type { Thread } from '../../types/store';
 export function saveThread(thread: Thread): void {
   if (!isDatabaseInitialized()) return;
 
+  // The three import-display columns (migration 010, #927) are APPENDED at
+  // positions 14-16, after sync_status — the order every existing column sits
+  // in is load-bearing for the positional params below.
   const sql = `INSERT OR REPLACE INTO orbital_threads
     (id, conversation_id, author_id, title, body, author_username,
      content_type, pinned, reply_count, last_reply_at,
-     created_at, updated_at, sync_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+     created_at, updated_at, sync_status,
+     is_import, import_source, media_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
   const params = [
     thread.id,
@@ -50,6 +54,9 @@ export function saveThread(thread: Thread): void {
     Math.floor(thread.createdAt),
     Math.floor(thread.updatedAt),
     thread.syncStatus,
+    thread.isImport ? 1 : 0,
+    thread.importSource ?? null,
+    thread.mediaCount != null ? Math.floor(thread.mediaCount) : null,
   ];
 
   execute(sql, params);
@@ -98,9 +105,29 @@ interface ThreadRow {
   /** Epoch ms since #844; legacy rows hold seconds — read via toMillis. */
   updated_at: number;
   sync_status: string;
+  /** Migration 010; absent on a row read from a pre-010 cache. */
+  is_import?: number | null;
+  /** Migration 010; 'facebook' | 'instagram', else unknown. */
+  import_source?: string | null;
+  /** Migration 010; NULL = unknown count. */
+  media_count?: number | null;
 }
 
+/** The two values {@link Thread.importSource} may hold. Anything else is NULL. */
+const IMPORT_SOURCES: readonly string[] = ['facebook', 'instagram'];
+
 function mapRowToThread(row: ThreadRow): Thread {
+  // Validate on READ rather than with a CHECK constraint (see migration 010).
+  // A pre-010 row has none of these columns at all, so every branch has to
+  // survive `undefined` as well as a junk value: such a row hydrates as
+  // non-import with an unknown count and corrects on the next fetch.
+  const mediaCount =
+    typeof row.media_count === 'number' &&
+    Number.isInteger(row.media_count) &&
+    row.media_count >= 0
+      ? row.media_count
+      : null;
+
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -115,6 +142,12 @@ function mapRowToThread(row: ThreadRow): Thread {
     createdAt: toMillis(row.created_at),
     updatedAt: toMillis(row.updated_at),
     syncStatus: (row.sync_status as Thread['syncStatus']) || 'synced',
+    isImport: row.is_import === 1,
+    importSource:
+      typeof row.import_source === 'string' && IMPORT_SOURCES.includes(row.import_source)
+        ? (row.import_source as Thread['importSource'])
+        : null,
+    mediaCount,
   };
 }
 

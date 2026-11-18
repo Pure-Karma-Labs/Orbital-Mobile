@@ -156,7 +156,9 @@ import {
 } from '../../services/api/errors';
 import { toggleMute } from '../../services/notificationSettingsSync';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
+import { makeThread } from '../../testUtils/makeThread';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
+import type { Thread } from '../../types/store';
 
 const mockToggleMute = toggleMute as jest.Mock;
 
@@ -332,21 +334,21 @@ const mockRoute = {
 
 const now = Date.now();
 
-const fakeThread = {
+const fakeThread = makeThread({
   id: 'thread-1',
   conversationId: 'group-1',
   authorId: 'user-1',
   authorUsername: 'alice',
   title: 'Test Thread Title',
   body: 'This is the thread body content',
-  contentType: 'text' as const,
+  contentType: 'text',
   pinned: false,
   replyCount: 2,
   lastReplyAt: now,
   createdAt: now - 3600000, // 1 hour ago
   updatedAt: now - 3600000,
-  syncStatus: 'synced' as const,
-};
+  syncStatus: 'synced',
+});
 
 const fakeReplies = [
   {
@@ -3987,5 +3989,107 @@ describe('ThreadDetailScreen — group key (#912)', () => {
 
       expect(mockLoadReplies).toHaveBeenLastCalledWith('thread-2', 'group-1', 3);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Top-bar title (#927)
+//
+// An imported post has no stored title, so the bar would otherwise read
+// "Thread" above a screen full of content. It derives a headline instead —
+// but only for a thread in a known ORBIT: a DM's "thread" is a message, and
+// deriving a header from a message's body prints the message over itself.
+// ---------------------------------------------------------------------------
+
+describe('ThreadDetailScreen — top-bar title', () => {
+  const BODY = 'Back from the lake.';
+
+  /** Point the store at one titleless thread in `group-1`. */
+  function useTitlelessThread(overrides: Partial<Thread> = {}): void {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    const thread = makeThread({
+      ...fakeThread,
+      title: '',
+      body: BODY,
+      ...overrides,
+    });
+    storesMock.useThreads.mockReturnValue({
+      ...storesMock.useThreads(),
+      threads: { 'thread-1': thread },
+      threadIdsByConversation: { 'group-1': ['thread-1'] },
+      activeThreadId: 'thread-1',
+    });
+    mockLoadThread.mockResolvedValue(thread);
+  }
+
+  function hasText(renderer: ReactTestRenderer, value: string): boolean {
+    return renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .some((node) => node.props.children === value);
+  }
+
+  it('shows the derived headline for an orbit thread with no title', async () => {
+    mockConversations = { 'group-1': { type: 'group', name: 'Family' } };
+    useTitlelessThread();
+
+    const renderer = await renderScreen();
+
+    expect(hasText(renderer, BODY)).toBe(true);
+    // It beats the navigation param, which carried the previous screen's
+    // (empty) stored title and fell back to this fixture's 'Test Thread'.
+    expect(hasText(renderer, 'Test Thread')).toBe(false);
+  });
+
+  it('shows "Thread" for a DM thread with the very same body', async () => {
+    mockConversations = { 'group-1': { type: 'direct', name: 'bob' } };
+    useTitlelessThread();
+
+    const renderer = await renderScreen({ threadTitle: undefined });
+
+    expect(hasText(renderer, 'Thread')).toBe(true);
+    // The body is on screen, as the post. It is simply not the header.
+    const headerish = renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .filter((node) => node.props.children === BODY);
+    expect(headerish).toHaveLength(1);
+  });
+
+  it('shows "Thread" when the conversation is not in the store at all', async () => {
+    mockConversations = {};
+    useTitlelessThread();
+
+    const renderer = await renderScreen({ threadTitle: undefined });
+
+    expect(hasText(renderer, 'Thread')).toBe(true);
+    expect(hasText(renderer, BODY)).toBe(true); // rendered as the body, once
+    expect(
+      renderer.root
+        .findAllByType('Text' as unknown as React.ComponentType)
+        .filter((node) => node.props.children === BODY),
+    ).toHaveLength(1);
+  });
+
+  it('prefers a stored title over any derivation', async () => {
+    mockConversations = { 'group-1': { type: 'group', name: 'Family' } };
+    useTitlelessThread({ title: 'Lake weekend' });
+
+    const renderer = await renderScreen();
+
+    expect(hasText(renderer, 'Lake weekend')).toBe(true);
+  });
+
+  it('falls back to the navigation param when the thread is not loaded yet', async () => {
+    mockConversations = { 'group-1': { type: 'group', name: 'Family' } };
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      ...storesMock.useThreads(),
+      threads: {},
+      threadIdsByConversation: {},
+      activeThreadId: null,
+    });
+
+    const renderer = await renderScreen();
+
+    expect(hasText(renderer, 'Test Thread')).toBe(true);
   });
 });

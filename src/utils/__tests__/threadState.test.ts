@@ -8,10 +8,11 @@
  */
 
 import { getThreadState } from '../threadState';
+import { makeThread as makeThreadFixture } from '../../testUtils/makeThread';
 import type { Thread } from '../../types/store';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
+  return makeThreadFixture({
     id: 'thread-1',
     conversationId: 'group-1',
     authorId: 'user-1',
@@ -26,7 +27,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     updatedAt: 10_000,
     syncStatus: 'synced',
     ...overrides,
-  } as Thread;
+  });
 }
 
 describe('getThreadState — per-thread view watermark', () => {
@@ -110,6 +111,57 @@ describe('getThreadState — activity comes from threadActivityAt', () => {
     // An Infinity lastReplyAt is dropped instead of winning forever.
     expect(
       getThreadState(makeThread({ createdAt: 10_000, lastReplyAt: Infinity }), {}, 20_000),
+    ).toBe('read');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #927 — imported threads are read; their replies are not
+// ---------------------------------------------------------------------------
+
+describe('getThreadState — imported threads (#927)', () => {
+  // The server excludes imported threads from an orbit's unread_count and from
+  // last_message_at (Backend #317). Without this, a 1,000-post backfill dated
+  // after a peer's last read renders a dotted row per post next to an orbit
+  // badge of 0, on every other member's device.
+  it('reads an unreplied import as read, however new its createdAt', () => {
+    const imported = makeThread({ isImport: true, createdAt: 50_000, lastReplyAt: null });
+    expect(getThreadState(imported, {}, 20_000)).toBe('read');
+    expect(getThreadState(imported, {}, null)).toBe('read');
+    expect(getThreadState(imported, {}, 60_000)).toBe('read');
+  });
+
+  it('reads an import created after the watermark as read (the native control is unread)', () => {
+    const base = { createdAt: 50_000, lastReplyAt: null };
+    expect(getThreadState(makeThread({ ...base, isImport: true }), {}, 20_000)).toBe('read');
+    // Same timestamps, not an import: still unread. Without this control the
+    // case above would pass for a watermark that simply covers everything.
+    expect(getThreadState(makeThread({ ...base, isImport: false }), {}, 20_000)).toBe('unread');
+  });
+
+  it('reports an import with a reply newer than the watermark as unread', () => {
+    // A reply TO an imported thread is ordinary activity on both sides: it
+    // counts toward unread_count and it bumps last_message_at.
+    const replied = makeThread({ isImport: true, createdAt: 50_000, lastReplyAt: 30_000 });
+    expect(getThreadState(replied, {}, 20_000)).toBe('unread');
+  });
+
+  it('reports an import whose reply predates the watermark as read', () => {
+    const replied = makeThread({ isImport: true, createdAt: 50_000, lastReplyAt: 30_000 });
+    expect(getThreadState(replied, {}, 40_000)).toBe('read');
+    expect(getThreadState(replied, { 'thread-1': 40_000 }, null)).toBe('read');
+  });
+
+  it('ignores a corrupt lastReplyAt on an import rather than reading it as activity', () => {
+    expect(
+      getThreadState(makeThread({ isImport: true, createdAt: 50_000, lastReplyAt: NaN }), {}, 10),
+    ).toBe('read');
+    expect(
+      getThreadState(
+        makeThread({ isImport: true, createdAt: 50_000, lastReplyAt: Infinity }),
+        {},
+        10,
+      ),
     ).toBe('read');
   });
 });

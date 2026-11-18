@@ -49,7 +49,15 @@ import { useBlockedSet } from '../hooks/useBlockedSet';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { getThreadState } from '../utils/threadState';
 import { compareThreadsByActivityDesc, threadActivityAt } from '../utils/threadActivity';
-import { formatDayLabel, formatShortTime, localDayKey } from '../utils/formatPostTimestamp';
+import {
+  formatDayLabel,
+  formatImportDate,
+  formatImportDateA11y,
+  formatShortTime,
+  localDayKey,
+} from '../utils/formatPostTimestamp';
+import { NO_TITLE_FALLBACK, threadHeadline } from '../utils/threadHeadline';
+import { describeImportedLabel } from './import/importCopy';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -111,6 +119,21 @@ function buildListRows(threads: Thread[]): ListRow[] {
   }
 
   return rows;
+}
+
+/**
+ * What a screen reader says about an imported row (#927), folded into the
+ * row's own label: "imported from Facebook, June 1, 2014".
+ *
+ * Lowercase leading, because it is a clause in the middle of a sentence that
+ * starts "Thread: ". The date is the LONG form — "June 1" rather than
+ * "Jun 1" — since an abbreviation read aloud is not a month.
+ */
+function describeImportForRow(thread: Thread): string {
+  const label = describeImportedLabel(thread.importSource);
+  const spoken = label.charAt(0).toLowerCase() + label.slice(1);
+  const date = formatImportDateA11y(thread.createdAt);
+  return date === '' ? spoken : `${spoken}, ${date}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -349,9 +372,13 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
       const thread = threads[threadId];
       navigation.push('ThreadDetail', {
         threadId,
-        // `||`, not `??`, for the same reason as the long-press label below: an
-        // imported (Meta) post can carry an empty title, and `??` would pass
-        // `''` through as the detail screen's header text.
+        // The STORED title, deliberately — never the derived headline (#927).
+        // The headline can be body text, and navigation params are persisted
+        // state: no decrypted body belongs in them. The detail screen derives
+        // its own headline from the store instead.
+        //
+        // `||`, not `??`: an imported (Meta) post can carry an empty title,
+        // and `??` would pass `''` through as the detail screen's header text.
         threadTitle: thread?.title || undefined,
       });
     },
@@ -368,9 +395,11 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
 
   const handleThreadLongPress = useCallback(
     (threadId: string) => {
-      // `||`, not `??`: an imported (Meta) post can legitimately carry an
-      // empty title, which `??` passes straight through as the menu's label.
-      showMuteMenu(threadId, 'thread', threadsRef.current[threadId]?.title || 'Thread');
+      // The same headline the row shows, so the menu names the thread the
+      // member long-pressed rather than a bare "Thread" (#927). A row can be
+      // pressed after its thread left the map, hence the guard.
+      const thread = threadsRef.current[threadId];
+      showMuteMenu(threadId, 'thread', (thread ? threadHeadline(thread) : null) ?? 'Thread');
     },
     [showMuteMenu],
   );
@@ -427,16 +456,23 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
             <ThreadItem
               threadId={t.id}
               authorId={t.authorId}
-              // `||`, not `??`: an empty title would otherwise render a
-              // zero-height row title and the bare a11y label 'Thread: '.
-              title={t.title || '(no title)'}
+              // A title when there is one, otherwise something derived from
+              // what the thread HAS (#927): its first line, its link's host,
+              // or its photo count. Meta exports carry no titles at all, so
+              // without this every imported row read "(no title)".
+              title={threadHeadline(t) ?? NO_TITLE_FALLBACK}
               author={t.authorUsername}
               groupId={activeConversationId ?? null}
-              time={formatShortTime(t.createdAt)}
+              // An import's served time is a synthetic noon-UTC sort key, not
+              // a moment: it shows the original DATE, with its year and no
+              // clock time. Native rows are unchanged.
+              time={t.isImport ? formatImportDate(t.createdAt) : formatShortTime(t.createdAt)}
               replyCount={t.replyCount}
               hasMedia={t.contentType === 'media'}
               state={getThreadState(t, threadLastViewedAt, lastReadAtSnapshot)}
               unreadCount={0}
+              isImport={t.isImport}
+              importA11y={t.isImport ? describeImportForRow(t) : undefined}
               onPress={handleThreadPress}
               onLongPress={handleThreadLongPress}
             />

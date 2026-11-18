@@ -80,11 +80,18 @@
  * `jest.useFakeTimers()` must pass `yieldEvery: 0`, or the `setTimeout` will
  * never fire and the parse will hang.
  *
- * ## Removal trigger
+ * ## The read path
  *
- * {@link openImportMeta} and {@link parseImportMetaPlaintext} have no
- * production caller until #927. If #927 closes unmerged, delete them and their
- * tests.
+ * {@link openImportMetaWithKey} is the read path's ONLY door (#927), called
+ * once per fetched row by `threadService.resolveImportDisplay` with the group
+ * key that load already holds. {@link parseImportMetaPlaintext} is the
+ * plaintext-only entry beneath it, for a caller that already has the JSON.
+ *
+ * There is deliberately no key-FETCHING wrapper. One existed until the read
+ * path landed and never had a production caller: every reader maps a page of
+ * rows under a key it has already fetched, and a per-row `getOrFetchGroupKey`
+ * would be an await inside the mapping loop and a chance for the key to be
+ * invalidated mid-page. A caller without a key fetches it, once, itself.
  */
 
 import { hkdfSha256, hmacSha256 } from 'orbital-signal';
@@ -245,8 +252,8 @@ export class ImportUserIdError extends Error {
  *
  * A tamper signal, never `null`: the group key opened everything else in the
  * thread, so a GCM tag failure here means these bytes are not what this device
- * wrote. `null` from {@link openImportMeta} is reserved for ciphertext that
- * DID authenticate and simply is not a v1 envelope.
+ * wrote. `null` from {@link openImportMetaWithKey} is reserved for ciphertext
+ * that DID authenticate and simply is not a v1 envelope.
  */
 export class ImportMetaAuthError extends Error {
   constructor() {
@@ -306,7 +313,7 @@ export function importKeyToWire(importKey: Uint8Array): string {
  * Tolerant about unknown keys (a later version may add fields) and strict
  * about the three it reads: a wrong `v`, a non-object, a missing field, a
  * `source` outside the two literals, or a non-safe-integer date all give
- * `null`. Exported for #927, which may hold the plaintext already.
+ * `null`. Exported for a caller that already holds the plaintext.
  */
 export function parseImportMetaPlaintext(json: string): ImportMetaV1 | null {
   let value: unknown;
@@ -342,8 +349,9 @@ export function parseImportMetaPlaintext(json: string): ImportMetaV1 | null {
  * raises itself is `'terminal-for-run'` — a changed key, a closed session, a
  * bad userId and every {@link ImportCryptoInvariantError} are conditions no
  * retry can clear, and an import-meta authentication failure on the WRITE path
- * means the envelope we just produced did not round-trip. #927 decides its own
- * read-path handling of that error.
+ * means the envelope we just produced did not round-trip. The READ path does
+ * not classify at all: `threadService.resolveImportDisplay` catches that error
+ * and degrades the row to an unknown source (#927).
  *
  * That claim is only true while this module raises nothing untyped: a bare
  * `new Error(...)` here would classify as `null` and be retried for the rest
@@ -749,24 +757,43 @@ export async function openImportKeySession(
 }
 
 /**
- * Open a sealed import-meta envelope (#927's read path).
+ * Open a sealed import-meta envelope with a group key the caller already
+ * holds, and no await of its own (#927's read path).
  *
  * Error contract:
- *  - `PendingWrapError` / `GroupKeyUnwrapError` from the group-key fetch
- *    propagate unchanged — the envelope may well be fine, the key just is not
- *    here yet.
  *  - A GCM authentication failure, or base64 that will not decode, throws
  *    {@link ImportMetaAuthError}.
  *  - `null` means the plaintext authenticated but is not a v1 envelope.
  *
- * Needs no session: it derives nothing, and reads only the group key.
+ * Needs no session: it derives nothing, and reads no key of its own.
+ *
+ * The thread-list path fetches the orbit's key once for the whole page, and it
+ * maps rows inside a `Promise.all`; a second `getOrFetchGroupKey` per row would
+ * be both pointless and a chance for the key to be invalidated mid-page. It is
+ * SYNCHRONOUS so the caller can treat opening an envelope as a pure step of
+ * mapping a row, and so the key it was handed cannot be zeroed in place across
+ * an await inside this function.
+ *
+ * The wire caps are checked BEFORE any decode. The server bounds these columns
+ * too, but a hostile or buggy response is exactly the input this function
+ * exists to survive, and `decryptContent` would otherwise base64-decode an
+ * arbitrarily long string per row of a 50-row page. The same two constants the
+ * seal path asserts against, so the read path can never refuse an envelope this
+ * app could have written.
  */
-export async function openImportMeta(
+export function openImportMetaWithKey(
   encryptedImportMeta: string,
   importMetaIv: string,
+  groupKey: Uint8Array,
   groupId: string,
-): Promise<ImportMetaV1 | null> {
-  const groupKey = await getOrFetchGroupKey(groupId);
+): ImportMetaV1 | null {
+  // Base64 is ASCII, so character count IS the byte count.
+  if (encryptedImportMeta.length === 0 || encryptedImportMeta.length > MAX_IMPORT_META_B64) {
+    throw new ImportMetaAuthError();
+  }
+  if (importMetaIv.length === 0 || importMetaIv.length > MAX_IMPORT_META_IV_B64) {
+    throw new ImportMetaAuthError();
+  }
 
   let plaintext: string;
   try {

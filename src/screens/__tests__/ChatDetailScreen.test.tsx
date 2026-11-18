@@ -9,6 +9,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ChatDetailScreen } from '../ChatDetailScreen';
 import { formatDayLabel } from '../../utils/formatPostTimestamp';
+import { makeThread } from '../../testUtils/makeThread';
 import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -493,6 +494,39 @@ describe('ChatDetailScreen — activity ordering', () => {
     expect(dayRows[0].props.children).not.toBe(`─── ${formatDayLabel(createdAt)} ───`);
     expect(sectionRows).toHaveLength(0);
   });
+
+  // #919, on the second of formatDayLabel's two callers: a DM scrolled back
+  // past a year boundary. The string is pinned here, not derived from the
+  // formatter, so a regression in either one shows up as a failure rather than
+  // as two matching wrongs.
+  it('dates an other-year day separator with its year', () => {
+    const createdAt = new Date(2014, 5, 1, 9, 0).getTime();
+    mockUseThreads.mockReturnValue({
+      ...emptyThreadsState,
+      threads: {
+        'thread-2014': makeThread({
+          id: 'thread-2014',
+          conversationId: 'dm-conv-1',
+          authorId: 'user-2',
+          authorUsername: 'bob',
+          body: 'A message from 2014',
+          createdAt,
+          updatedAt: createdAt,
+        }),
+      },
+      threadIdsByConversation: { 'dm-conv-1': ['thread-2014'] },
+    });
+
+    const renderer = renderScreen('Bob');
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const dayRows = allText.filter(
+      (node) =>
+        typeof node.props.children === 'string' && node.props.children.startsWith('─── '),
+    );
+
+    expect(dayRows).toHaveLength(1);
+    expect(dayRows[0].props.children).toBe('─── Jun 1, 2014 ───');
+  });
 });
 
 describe('ChatDetailScreen — navigation', () => {
@@ -555,7 +589,7 @@ describe('ChatDetailScreen — focus lifecycle', () => {
 describe('ChatDetailScreen — block filtering', () => {
   const now = Date.now();
 
-  const threadByBlocked: Thread = {
+  const threadByBlocked: Thread = makeThread({
     id: 'thread-blocked',
     conversationId: 'dm-conv-1',
     authorId: 'u-blocked',
@@ -569,9 +603,9 @@ describe('ChatDetailScreen — block filtering', () => {
     createdAt: now,
     updatedAt: now,
     syncStatus: 'synced',
-  } as Thread;
+  });
 
-  const threadByOk: Thread = {
+  const threadByOk: Thread = makeThread({
     id: 'thread-ok',
     conversationId: 'dm-conv-1',
     authorId: 'u-ok',
@@ -585,7 +619,7 @@ describe('ChatDetailScreen — block filtering', () => {
     createdAt: now,
     updatedAt: now,
     syncStatus: 'synced',
-  } as Thread;
+  });
 
   const blockedThreadsState = {
     ...emptyThreadsState,

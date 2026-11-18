@@ -2727,7 +2727,7 @@ describe('batch failures inside a run', () => {
     await confirmAndRunLaunch();
 
     // The allowlist is what keeps a widened server vocabulary out of
-    // `import_items.error_code`, and so out of #927's per-code copy table.
+    // `import_items.error_code`, and so out of `importCopy.ts`'s per-code table.
     expect(itemRows()).toEqual([
       { id: 'item-0', status: 'failed', error_code: 'IMPORT_RESULT_UNKNOWN' },
       { id: 'item-1', status: 'created', error_code: null },

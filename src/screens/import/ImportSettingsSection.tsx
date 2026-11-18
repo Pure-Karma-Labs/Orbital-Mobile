@@ -32,6 +32,7 @@ import { SettingsRow } from '../settings/SettingsRow';
 import { useImportAvailability } from './useImportAvailability';
 import { importStore } from '../../services/metaImport/importRunner';
 import {
+  IMPORT_GLYPH,
   IMPORT_SECTION_HEADER,
   OTHER_ORBIT_STATUS_LABEL,
   deriveImportView,
@@ -44,15 +45,10 @@ import {
 import type { SettingsStackParamList } from '../../navigation/types';
 import type { ImportViewKind } from './importCopy';
 
-/**
- * The neutral inbox tray, on every row.
- *
- * SCREEN-SETTINGS.md puts an OpenMoji on every Settings row and all other call
- * sites comply, so `SettingsRow.emojiUnified` stays required. This glyph
- * describes the ACTION rather than the platform, so the rows carry no Meta
- * mark — which is also the brand rule for this flow.
- */
-const IMPORT_GLYPH = '1F4E5';
+// The neutral inbox tray on these rows is the same glyph an imported thread
+// now carries (#927), so it lives in `importCopy` beside the label that goes
+// with it. SCREEN-SETTINGS.md puts an OpenMoji on every Settings row and all
+// other call sites comply, so `SettingsRow.emojiUnified` stays required.
 
 /**
  * Views in which a job already exists on this device. There is one import per

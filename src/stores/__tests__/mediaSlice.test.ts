@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { createMediaSlice } from '../slices/mediaSlice';
+import { makeThread as makeThreadFixture } from '../../testUtils/makeThread';
 import type { AppState, MediaItem, Reply, Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -513,7 +514,7 @@ describe('mediaSlice — removeMedia', () => {
 // ---------------------------------------------------------------------------
 
 function makeThread(id: string, authorId: string): Thread {
-  return {
+  return makeThreadFixture({
     id,
     conversationId: 'conv-1',
     authorId,
@@ -527,7 +528,7 @@ function makeThread(id: string, authorId: string): Thread {
     createdAt: 1000,
     updatedAt: 1000,
     syncStatus: 'synced',
-  };
+  });
 }
 
 function makeReply(id: string, threadId: string, authorId: string): Reply {

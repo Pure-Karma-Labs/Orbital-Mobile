@@ -195,12 +195,95 @@ describe('conversationsSlice — setConversations', () => {
     expect(store.getState().conversationIds).toEqual(['conv-2', 'conv-3', 'conv-1']);
   });
 
-  it('treats null lastMessageAt as 0 in sort', () => {
+  // Was "treats null lastMessageAt as 0": that rule sank an import-only orbit
+  // to the bottom of the list for ever, because the server reports
+  // `last_message_at: null` for one by design (#927).
+  it('falls back to createdAt for a null lastMessageAt', () => {
     const store = makeStore();
-    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: null });
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: null, createdAt: 900 });
     const c2 = makeConversation({ id: 'conv-2', lastMessageAt: 500 });
     store.getState().setConversations([c1, c2]);
-    expect(store.getState().conversationIds[0]).toBe('conv-2');
+    expect(store.getState().conversationIds[0]).toBe('conv-1');
+  });
+
+  it('still sorts a null-lastMessageAt row below a newer conversation', () => {
+    const store = makeStore();
+    const c1 = makeConversation({ id: 'conv-1', lastMessageAt: null, createdAt: 900 });
+    const c2 = makeConversation({ id: 'conv-2', lastMessageAt: 5000 });
+    store.getState().setConversations([c1, c2]);
+    expect(store.getState().conversationIds).toEqual(['conv-2', 'conv-1']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #927 — import-only orbits, and the fallback that is SORT-ONLY
+// ---------------------------------------------------------------------------
+
+describe('conversationsSlice — recency fallback (#927)', () => {
+  it('orders an import-only orbit by its join time, not by 1970', () => {
+    const store = makeStore();
+    // An orbit whose only content is an import: the server never moves
+    // last_message_at for imported threads, so it serves null.
+    const importOnly = makeConversation({
+      id: 'orbit-import',
+      lastMessageAt: null,
+      createdAt: 4000,
+    });
+    const quiet = makeConversation({ id: 'orbit-quiet', lastMessageAt: 3000 });
+    const older = makeConversation({ id: 'orbit-older', lastMessageAt: 1000 });
+
+    store.getState().setGroupConversations([older, quiet, importOnly]);
+
+    expect(store.getState().conversationIds).toEqual([
+      'orbit-import',
+      'orbit-quiet',
+      'orbit-older',
+    ]);
+  });
+
+  it('leaves the stored lastMessageAt null — the fallback places, it does not write', () => {
+    const store = makeStore();
+    const importOnly = makeConversation({
+      id: 'orbit-import',
+      lastMessageAt: null,
+      createdAt: 4000,
+    });
+
+    store.getState().setGroupConversations([importOnly]);
+    expect(store.getState().conversations['orbit-import'].lastMessageAt).toBeNull();
+
+    store.getState().upsertConversation(importOnly);
+    expect(store.getState().conversations['orbit-import'].lastMessageAt).toBeNull();
+  });
+
+  it('still lets a bump BELOW createdAt land on a null row', () => {
+    // The row sorts by createdAt (4000) while the stored value is null, but
+    // `bumpLastMessageAt` keeps its own `?? 0` comparison: a first real
+    // message at 2000 is still the newest MESSAGE and must be recorded.
+    const store = makeStore();
+    store.getState().setGroupConversations([
+      makeConversation({ id: 'orbit-import', lastMessageAt: null, createdAt: 4000 }),
+    ]);
+
+    store.getState().bumpLastMessageAt('orbit-import', 2000);
+
+    expect(store.getState().conversations['orbit-import'].lastMessageAt).toBe(2000);
+  });
+
+  it('sorts a brand-new DM with a null lastMessageAt by its creation time', () => {
+    const store = makeStore();
+    const freshDm = makeConversation({
+      id: 'dm-new',
+      type: 'direct',
+      lastMessageAt: null,
+      createdAt: 9000,
+    });
+    const chattyDm = makeConversation({ id: 'dm-old', type: 'direct', lastMessageAt: 8000 });
+
+    store.getState().setConversations([chattyDm, freshDm]);
+
+    // Matches what ChatsListScreen has always shown for DMs.
+    expect(store.getState().conversationIds).toEqual(['dm-new', 'dm-old']);
   });
 });
 

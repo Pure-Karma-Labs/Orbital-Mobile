@@ -2345,7 +2345,8 @@ async function settleRun(r: ActiveRun): Promise<void> {
     );
 
     // The `import_completed` broadcast only lands if the socket is up, so the
-    // refetch is a belt. #927 adds the WS case; `loadThreadsForGroup` is
+    // refetch is a belt. The WS case exists since #927
+    // (`messageHandler.handleImportCompleted`); `loadThreadsForGroup` is
     // idempotent, so the two cannot double-apply.
     void loadThreadsForGroup(r.conversationId).catch(() => {
       // Nothing the member can act on: the threads arrive on the next open.

@@ -18,6 +18,7 @@ import {
   getOrFetchGroupKey,
 
 } from './crypto/contentCrypto';
+import { openImportMetaWithKey } from './crypto/importCrypto';
 import { useAppStore } from '../stores/useAppStore';
 import { generateUUID } from '../utils/uuid';
 import { isValidTimestamp, maxTimestamp } from '../utils/threadActivity';
@@ -32,6 +33,7 @@ import { BlockedRecipientError } from './api/errors';
 import { deriveBlockedDmPeer } from '../utils/dmPeer';
 import { resolveMediaPath } from './media/mediaPaths';
 import { teardownLocalMedia } from './media/mediaTeardown';
+import type { ImportSource } from './metaImport/types';
 import type { Thread, Reply, MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
 import type { ThreadResponse, ThreadListItem, ReplyResponse, MediaMetadata } from '../types/api';
@@ -843,6 +845,130 @@ function applyReconciledRecency(
 }
 
 /**
+ * What happened to a row's sealed import-meta envelope (#927).
+ *
+ * `'none'` is "this row is not an import at all" — including a row the server
+ * flagged in a conversation that is not a known orbit.
+ */
+type ImportEnvelopeOutcome = 'none' | 'opened' | 'absent' | 'invalid' | 'auth-failed';
+
+interface ImportDisplay {
+  isImport: boolean;
+  importSource: ImportSource | null;
+  envelope: ImportEnvelopeOutcome;
+}
+
+const NOT_AN_IMPORT: ImportDisplay = { isImport: false, importSource: null, envelope: 'none' };
+
+/**
+ * What the store knows about the conversation a fetched row belongs to (#927).
+ *
+ * Three cases, not two. `'unknown'` is the one that is easy to get wrong: a
+ * cold open straight into thread detail — a push notification or a deep link —
+ * reaches `loadThread` before the conversation list has loaded, so the store
+ * holds no row and the orbit CANNOT be confirmed. That is not the same fact as
+ * "this is not an orbit", and treating it as one would write `isImport: false`
+ * over a correctly flagged cached row (`loadThread` write-throughs to both the
+ * store and SQLite).
+ */
+type ConversationGate = 'orbit' | 'not-orbit' | 'unknown';
+
+function conversationGate(groupId: string): ConversationGate {
+  const conversation = getStoreActions().conversations[groupId];
+  if (conversation === undefined) return 'unknown';
+  return conversation.type === 'group' ? 'orbit' : 'not-orbit';
+}
+
+/**
+ * The import display fields already known for a thread, from the store if it
+ * is there and from SQLite otherwise (#927).
+ *
+ * Only read on the `'unknown'` gate, so the DB hit happens on the cold-open
+ * path alone. `safeDbGetThread` never throws.
+ *
+ * SCOPED TO THE CONVERSATION being mapped: a cached row filed under a
+ * different conversation is not evidence about this one. The cached flag
+ * passed the orbit gate for the conversation it was written under, so
+ * carrying it onto a row the server now serves under another `groupId` (a DM,
+ * say) would flag a row that never passed any gate. A legitimate cold open
+ * always matches.
+ */
+function cachedImportDisplay(
+  threadId: string,
+  groupId: string,
+): Pick<Thread, 'isImport' | 'importSource'> | null {
+  const cached = getStoreActions().threads[threadId] ?? safeDbGetThread(threadId);
+  return cached != null && cached.conversationId === groupId ? cached : null;
+}
+
+/**
+ * Decide the import DISPLAY fields for one fetched row (#927).
+ *
+ * TOTAL and synchronous: every outcome, including a tampered envelope, is a
+ * return value. The list maps its rows inside a `Promise.all`, so a throw here
+ * would reject the whole page and one bad envelope would blank an orbit.
+ *
+ * Trust boundary, per the Backend #317 hand-off: `isImport` is a server-supplied
+ * plaintext flag and is accepted as such — but only for a conversation the store
+ * already knows is a group. That gate is what stops a stray flag on a DM row
+ * from suppressing that DM's unread dot (`getThreadState` keys read state on
+ * `isImport`).
+ *
+ * On the `'unknown'` gate the payload's flag is WITHHELD and `cached` — what a
+ * previous load already wrote for this thread — is carried forward unchanged.
+ * Withholding is not the same as denying: writing `false` there would downgrade
+ * a correct cached row on every cold open into an orbit whose conversation row
+ * has not loaded yet. The trust boundary is unaffected, because anything in
+ * `cached` passed through this same gate when it was written; the one thing
+ * that cannot happen is a NEW flag arriving unverified.
+ *
+ * The envelope supplies the source label and NOTHING else. Its AAD binds the
+ * orbit, not the thread, so a hostile server can move one imported thread's
+ * envelope onto another in the same orbit; `meta.originalCreatedAt` is never
+ * read, and the displayed date comes from the served `createdAt`.
+ */
+function resolveImportDisplay(
+  row: Pick<ThreadListItem, 'isImport' | 'encryptedImportMeta' | 'importMetaIv'>,
+  groupKey: Uint8Array,
+  groupId: string,
+  gate: ConversationGate,
+  cached: Pick<Thread, 'isImport' | 'importSource'> | null,
+): ImportDisplay {
+  if (gate === 'unknown') {
+    // Carry forward, never write. The envelope is not opened: its outcome is
+    // only ever a tamper COUNT, and this row's flag is not being decided here.
+    return cached?.isImport === true
+      ? { isImport: true, importSource: cached.importSource ?? null, envelope: 'none' }
+      : NOT_AN_IMPORT;
+  }
+
+  if (row.isImport !== true || gate !== 'orbit') return NOT_AN_IMPORT;
+
+  const sealed = row.encryptedImportMeta;
+  const iv = row.importMetaIv;
+  // An absent envelope is not a tamper signal: the server serves all four keys
+  // unconditionally, so `null` here is simply "nothing sealed for this row".
+  // Empty strings are folded in with null rather than being sent through the
+  // open path, which would report them as an authentication failure.
+  if (typeof sealed !== 'string' || sealed.length === 0 || typeof iv !== 'string' || iv.length === 0) {
+    return { isImport: true, importSource: null, envelope: 'absent' };
+  }
+
+  let meta;
+  try {
+    meta = openImportMetaWithKey(sealed, iv, groupKey, groupId);
+  } catch {
+    // Bare catch, no bound error and no logging: the only values in scope are
+    // ciphertext and a crypto failure reason, and neither may be carried
+    // anywhere. The caller counts these, nothing more.
+    return { isImport: true, importSource: null, envelope: 'auth-failed' };
+  }
+
+  if (meta === null) return { isImport: true, importSource: null, envelope: 'invalid' };
+  return { isImport: true, importSource: meta.source, envelope: 'opened' };
+}
+
+/**
  * Map a ThreadResponse (API) to a Thread (store), decrypting content fields.
  * groupId on the API maps to conversationId in the store.
  */
@@ -873,6 +999,15 @@ async function mapThreadResponse(
     });
   }
 
+  const detailGate = conversationGate(response.groupId);
+  const importDisplay = resolveImportDisplay(
+    response,
+    groupKey,
+    response.groupId,
+    detailGate,
+    detailGate === 'unknown' ? cachedImportDisplay(response.threadId, response.groupId) : null,
+  );
+
   return {
     id: response.threadId,
     conversationId: response.groupId,
@@ -886,9 +1021,15 @@ async function mapThreadResponse(
     // #883: the detail response carries last_reply_at. It used to be hardcoded
     // null here, so opening a post wiped the recency that put it on top.
     lastReplyAt: parseServerTimestamp(response.lastReplyAt),
+    // The SERVED value, never the envelope's date (#927).
     createdAt: new Date(response.createdAt).getTime(),
     updatedAt: new Date(response.createdAt).getTime(),
     syncStatus: 'synced',
+    isImport: importDisplay.isImport,
+    importSource: importDisplay.importSource,
+    // The detail payload carries the array the list counts, under the same
+    // server predicate — so this is the list's `media_count`, computed here.
+    mediaCount: response.media?.length ?? 0,
   };
 }
 
@@ -939,10 +1080,15 @@ async function mapReplyResponse(
   };
 }
 
+/**
+ * Returns the envelope outcome alongside the row so `loadThreadsForGroup` can
+ * report ONE count per load (#927) instead of a line per row.
+ */
 async function mapThreadListItem(
   item: ThreadListItem,
   groupKey: Uint8Array,
-): Promise<Thread> {
+  gate: ConversationGate,
+): Promise<{ thread: Thread; envelope: ImportEnvelopeOutcome }> {
   const { title, body } = await decryptThreadFields(
     item.encryptedTitle,
     item.titleIv,
@@ -952,21 +1098,36 @@ async function mapThreadListItem(
     item.groupId,
   );
 
+  const importDisplay = resolveImportDisplay(
+    item,
+    groupKey,
+    item.groupId,
+    gate,
+    gate === 'unknown' ? cachedImportDisplay(item.threadId, item.groupId) : null,
+  );
+
   return {
-    id: item.threadId,
-    conversationId: item.groupId,
-    authorId: item.authorId,
-    authorUsername: item.authorUsername,
-    title,
-    body,
-    contentType: item.mediaCount > 0 ? 'media' : 'text',
-    pinned: false,
-    replyCount: item.replyCount,
-    // An unparseable value must land as null, not NaN (#883).
-    lastReplyAt: parseServerTimestamp(item.lastReplyAt),
-    createdAt: new Date(item.createdAt).getTime(),
-    updatedAt: new Date(item.createdAt).getTime(),
-    syncStatus: 'synced',
+    thread: {
+      id: item.threadId,
+      conversationId: item.groupId,
+      authorId: item.authorId,
+      authorUsername: item.authorUsername,
+      title,
+      body,
+      contentType: item.mediaCount > 0 ? 'media' : 'text',
+      pinned: false,
+      replyCount: item.replyCount,
+      // An unparseable value must land as null, not NaN (#883).
+      lastReplyAt: parseServerTimestamp(item.lastReplyAt),
+      // The SERVED value, never the envelope's date (#927).
+      createdAt: new Date(item.createdAt).getTime(),
+      updatedAt: new Date(item.createdAt).getTime(),
+      syncStatus: 'synced',
+      isImport: importDisplay.isImport,
+      importSource: importDisplay.importSource,
+      mediaCount: item.mediaCount,
+    },
+    envelope: importDisplay.envelope,
   };
 }
 
@@ -1005,9 +1166,24 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
     response.threads.map((item) => [item.threadId, item.lastReplyAt !== undefined]),
   );
 
-  const mapped = await Promise.all(
-    response.threads.map((item) => mapThreadListItem(item, groupKey)),
+  // Resolved ONCE for the page: every row carries the same groupId, and the
+  // gate is a property of the conversation, not of the row (#927).
+  const gate = conversationGate(groupId);
+  const mappedRows = await Promise.all(
+    response.threads.map((item) => mapThreadListItem(item, groupKey, gate)),
   );
+  const mapped = mappedRows.map((row) => row.thread);
+
+  // Tamper signal, COUNT ONLY and dev only — no ids, no ciphertext, no values,
+  // mirroring the DB-write-failed warn below. Production stays silent on
+  // purpose: a group-key rotation makes every envelope in the orbit fail at
+  // once, and that must not become a telemetry storm.
+  const authFailedCount = mappedRows.filter((row) => row.envelope === 'auth-failed').length;
+  if (__DEV__ && authFailedCount > 0) {
+    console.warn(
+      `[loadThreadsForGroup] import metadata failed to authenticate on ${authFailedCount} row(s)`,
+    );
+  }
 
   // Reconcile before persisting: `saveThreadBatch` is INSERT OR REPLACE, so a
   // reply applied while this request was in flight would otherwise reach the
@@ -1471,6 +1647,10 @@ export async function createNewThread(
     createdAt: now,
     updatedAt: now,
     syncStatus: 'pending',
+    // A thread composed in this app is never an import (#927).
+    isImport: false,
+    importSource: null,
+    mediaCount: options?.mediaIds?.length ?? 0,
   };
 
   const store = getStoreActions();
@@ -1499,6 +1679,9 @@ export async function createNewThread(
       updatedAt: new Date(response.createdAt).getTime(),
       contentType: response.media && response.media.length > 0 ? 'media' : 'text',
       syncStatus: 'synced',
+      // `isImport`/`importSource` carry over from the optimistic row: a thread
+      // this app composed is never an import, whatever the response says.
+      mediaCount: response.media?.length ?? 0,
     };
 
     // Write-through: persist confirmed thread to SQLCipher

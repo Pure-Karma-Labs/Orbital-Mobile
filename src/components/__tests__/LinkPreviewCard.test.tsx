@@ -149,6 +149,47 @@ describe('LinkPreviewCard', () => {
     expect(domainNode).toBeDefined();
   });
 
+  // #927 §7 moved this line onto the shared `extractUrlHost`. For ordinary
+  // URLs the rendered host must be exactly what `new URL(...).hostname`
+  // minus `www.` produced before, which is what these pins are for.
+  it('renders the same host as before for ordinary URLs', () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ['https://example.com/article', 'example.com'],
+      ['https://www.example.com/article', 'example.com'],
+      ['http://news.example.co.uk/a?b=1#c', 'news.example.co.uk'],
+      ['https://WWW.Example.COM/x', 'example.com'],
+    ];
+
+    for (const [url, expected] of cases) {
+      mockUseLinkPreview.mockReturnValue({
+        preview: { ...fakePreview, url },
+        loading: false,
+      });
+      const renderer = renderCard();
+      const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+      const domainNode = allText.find(
+        (node) => typeof node.props.children === 'string' && node.props.children === expected,
+      );
+      expect(domainNode).toBeDefined();
+    }
+  });
+
+  it('renders no domain line at all when the URL has no host', () => {
+    mockUseLinkPreview.mockReturnValue({
+      preview: { ...fakePreview, url: 'not a url' },
+      loading: false,
+    });
+    const renderer = renderCard();
+    // The card still renders (it has a title); the domain line is simply absent.
+    expect(findByTestId(renderer, 'link-preview-card')).not.toBeNull();
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    const domainNode = allText.find(
+      (node) =>
+        typeof node.props.children === 'string' && /example\.com/.test(node.props.children),
+    );
+    expect(domainNode).toBeUndefined();
+  });
+
   it('renders an Image when imageUrl is present', () => {
     mockUseLinkPreview.mockReturnValue({ preview: fakePreview, loading: false });
     const renderer = renderCard();

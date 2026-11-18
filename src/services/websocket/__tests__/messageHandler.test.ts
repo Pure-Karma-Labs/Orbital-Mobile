@@ -87,6 +87,8 @@ jest.mock('../../threadService', () => ({
   // #897: handleNewReply calls this OUTSIDE the try, before dedup — without
   // the mock every new_reply test throws on an undefined import.
   getKnownThreadAuthorId: jest.fn(() => null),
+  // #927: handleImportCompleted refetches the orbit's list.
+  loadThreadsForGroup: jest.fn(() => Promise.resolve([])),
 }));
 
 const mockMarkConversationReadEverywhere = jest.fn();
@@ -160,7 +162,7 @@ import {
 import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey } from '../../crypto/identityKeyAccess';
 import { base64ToArrayBuffer } from '../../crypto/utils';
 import { submitWrappedKey } from '../../api/groups';
-import { decryptThreadFields, decryptReplyBody, applyReplyToParentThread, getKnownThreadAuthorId } from '../../threadService';
+import { decryptThreadFields, decryptReplyBody, applyReplyToParentThread, getKnownThreadAuthorId, loadThreadsForGroup } from '../../threadService';
 import { useAppStore } from '../../../stores/useAppStore';
 import { saveThread as dbSaveThread } from '../../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply } from '../../../database/repositories/replyRepository';
@@ -320,6 +322,11 @@ describe('new_thread broadcast', () => {
     expect(thread.body).toBe('Decrypted Body');
     expect(thread.syncStatus).toBe('synced');
     expect(thread.replyCount).toBe(0);
+    // A live broadcast is never an import (#927): an import creates its
+    // threads silently and announces itself with `import_completed`.
+    expect(thread.isImport).toBe(false);
+    expect(thread.importSource).toBeNull();
+    expect(thread.mediaCount).toBe(0);
   });
 
   it('deduplicates by threadId', async () => {
@@ -2445,5 +2452,143 @@ describe('DB write-through', () => {
 
     expect(mockDbSaveReply).not.toHaveBeenCalled();
     expect(mockUpsertReply).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// import_completed (#927)
+// ---------------------------------------------------------------------------
+
+describe('handleBroadcast — import_completed', () => {
+  const mockLoadThreadsForGroup = loadThreadsForGroup as jest.MockedFunction<
+    typeof loadThreadsForGroup
+  >;
+  const ORBIT = testUUID('import-orbit');
+
+  const orbitRow = {
+    id: ORBIT,
+    type: 'group' as const,
+    name: 'My Orbit',
+    memberCount: 5,
+    active: true,
+    lastMessageAt: 1700000000000,
+    unreadCount: 0,
+    lastReadAt: null,
+    createdAt: 1700000000000,
+    updatedAt: 1700000000000,
+  };
+
+  /**
+   * Seed the store. `loaded` false means this session never loaded that
+   * orbit's threads — `threadIdsByConversation[ORBIT]` is absent, which is a
+   * different thing from a loaded orbit with no threads (`[]`).
+   */
+  function seed(
+    options: { conversation?: unknown; loaded?: boolean } = {},
+  ): void {
+    const conversation = 'conversation' in options ? options.conversation : orbitRow;
+    (useAppStore.getState as jest.Mock).mockReturnValue({
+      userId: TEST_USER_UUID,
+      viewingConversationId: null,
+      upsertThread: mockUpsertThread,
+      upsertReply: mockUpsertReply,
+      upsertContact: mockUpsertContact,
+      upsertConversation: mockUpsertConversation,
+      blockedUserIds: [],
+      bumpLastMessageAt: mockBumpLastMessageAt,
+      bumpGroupKeyGeneration: mockBumpGroupKeyGeneration,
+      incrementUnreadCount: mockIncrementUnreadCount,
+      markThreadViewed: jest.fn(),
+      contacts: {},
+      conversations: conversation ? { [ORBIT]: conversation } : {},
+      threads: {},
+      threadIdsByConversation: options.loaded === false ? {} : { [ORBIT]: [] },
+    });
+  }
+
+  function message(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      type: 'new_message',
+      conversationId: ORBIT,
+      timestamp: 1700000010000,
+      data: {
+        type: 'import_completed',
+        groupId: ORBIT,
+        importId: testUUID('import-session'),
+        authorId: testUUID('importer'),
+        createdPosts: 12,
+        ...overrides,
+      },
+    });
+  }
+
+  beforeEach(() => {
+    mockLoadThreadsForGroup.mockClear();
+    mockLoadThreadsForGroup.mockResolvedValue([]);
+    seed();
+  });
+
+  it('refetches the orbit exactly once', async () => {
+    await handleServerMessage(message());
+
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ORBIT);
+  });
+
+  it('has NO unread, badge, recency or notification side effects', async () => {
+    await handleServerMessage(message());
+
+    expect(mockIncrementUnreadCount).not.toHaveBeenCalled();
+    expect(mockBumpLastMessageAt).not.toHaveBeenCalled();
+    expect(mockUpsertConversation).not.toHaveBeenCalled();
+    expect(mockUpsertThread).not.toHaveBeenCalled();
+    expect(mockDbSaveThread).not.toHaveBeenCalled();
+  });
+
+  it('swallows a rejected refetch', async () => {
+    mockLoadThreadsForGroup.mockRejectedValue(new Error('network down'));
+
+    // An unhandled rejection here would fail the suite.
+    await expect(handleServerMessage(message())).resolves.toBeUndefined();
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a malformed groupId without touching the network', async () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await handleServerMessage(message({ groupId: 'not-a-uuid' }));
+
+    expect(mockLoadThreadsForGroup).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith('[WS:invalid_uuid]');
+    errorSpy.mockRestore();
+  });
+
+  it('skips an unknown conversation', async () => {
+    seed({ conversation: null });
+    await handleServerMessage(message());
+    expect(mockLoadThreadsForGroup).not.toHaveBeenCalled();
+  });
+
+  it('skips a conversation that is not an orbit', async () => {
+    seed({ conversation: { ...orbitRow, type: 'direct' as const } });
+    await handleServerMessage(message());
+    expect(mockLoadThreadsForGroup).not.toHaveBeenCalled();
+  });
+
+  it('skips an orbit whose threads this session never loaded', async () => {
+    seed({ loaded: false });
+    await handleServerMessage(message());
+    expect(mockLoadThreadsForGroup).not.toHaveBeenCalled();
+  });
+
+  it('refetches a LOADED but empty orbit — [] is not the same as absent', async () => {
+    seed({ loaded: true });
+    await handleServerMessage(message());
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips a session that created no posts', async () => {
+    await handleServerMessage(message({ createdPosts: 0 }));
+    expect(mockLoadThreadsForGroup).not.toHaveBeenCalled();
   });
 });

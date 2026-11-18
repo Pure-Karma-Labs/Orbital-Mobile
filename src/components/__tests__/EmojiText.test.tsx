@@ -196,6 +196,59 @@ describe('EmojiText', () => {
     expect(withNumberOfLines).toBeDefined();
   });
 
+  // --- linkify={false} (#927) ---
+
+  it('renders a URL as plain text when linkify is false', () => {
+    const renderer = renderEmojiText({
+      children: 'visit https://example.com',
+      linkify: false,
+    });
+    const root = renderer.root;
+
+    expect(findLinkNodes(root)).toHaveLength(0);
+    // No tap target of any kind: nothing in the tree has an onPress or a link
+    // role, so the row underneath keeps the whole surface.
+    expect(root.findAll((node) => typeof node.props.onPress === 'function')).toHaveLength(0);
+    expect(root.findAll((node) => node.props.accessibilityRole === 'link')).toHaveLength(0);
+
+    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
+    const withUrl = allText.find(
+      (node) => node.props.children === 'visit https://example.com',
+    );
+    expect(withUrl).toBeDefined();
+  });
+
+  it('still renders emoji alongside an un-linkified URL', () => {
+    const renderer = renderEmojiText({
+      children: 'check https://example.com \u{1F600}',
+      linkify: false,
+    });
+    const root = renderer.root;
+
+    expect(findLinkNodes(root)).toHaveLength(0);
+    const images = root.findAllByType('Image' as unknown as React.ComponentType);
+    expect(images).toHaveLength(1);
+    // The URL's own text survives — it is unstyled, not removed.
+    const allText = root.findAllByType('Text' as unknown as React.ComponentType);
+    expect(
+      allText.some(
+        (node) =>
+          typeof node.props.children === 'string' &&
+          /https:\/\/example\.com/.test(node.props.children),
+      ),
+    ).toBe(true);
+  });
+
+  it('linkifies by default, with no prop passed', () => {
+    const renderer = renderEmojiText({ children: 'visit https://example.com' });
+    expect(findLinkNodes(renderer.root).length).toBeGreaterThanOrEqual(1);
+    const explicit = renderEmojiText({
+      children: 'visit https://example.com',
+      linkify: true,
+    });
+    expect(findLinkNodes(explicit.root).length).toBeGreaterThanOrEqual(1);
+  });
+
   it('passes selectable prop to Text when set', () => {
     const renderer = renderEmojiText({
       children: 'selectable text',

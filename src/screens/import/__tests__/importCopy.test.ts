@@ -812,6 +812,9 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
     [988, 1000],
   ],
   describeImportOtherCaption: SOURCES.map((source) => [source]),
+  // #927: both sources AND the unknown-source arm, which is a real state (an
+  // absent or unreadable import-meta envelope) rather than a defensive one.
+  describeImportedLabel: [...SOURCES.map((source) => [source]), [null]],
   describeParseProgress: [
     [0, 0],
     [1, 1],
@@ -1729,5 +1732,43 @@ describe('formatCountdown', () => {
     expect(formatCountdown(NaN)).toBe('0:00');
     expect(formatCountdown(Infinity)).toBe('0:00');
     expect(formatCountdown(-Infinity)).toBe('0:00');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #927 — what an IMPORTED THREAD says about itself, outside the import flow.
+//
+// These two exports are read by the thread list and the thread detail screen,
+// which have no import context around them: the row has one glyph and the
+// caption one short line, and nothing else on either surface explains what
+// "imported" means. So both are pinned exactly, and both are held to the same
+// brand rules as the flow (the audit above walks them with the rest).
+// ---------------------------------------------------------------------------
+
+describe('#927 copy pins — the imported-thread badge', () => {
+  it('names the source when it is known', () => {
+    expect(copy.describeImportedLabel('facebook')).toBe('Imported from Facebook');
+    expect(copy.describeImportedLabel('instagram')).toBe('Imported from Instagram');
+  });
+
+  it('says "Imported post" when the source is unknown', () => {
+    // Reached when the envelope is absent or did not open — a real state, and
+    // one the member can do nothing about, so the line claims nothing more
+    // than the fact the thread is an import.
+    expect(copy.describeImportedLabel(null)).toBe('Imported post');
+  });
+
+  it('reuses SOURCE_LABEL rather than respelling either platform', () => {
+    for (const source of SOURCES) {
+      expect(copy.describeImportedLabel(source)).toContain(SOURCE_LABEL[source]);
+    }
+    // The word every arm shares, including the unknown one.
+    expect(copy.describeImportedLabel(null).startsWith('Imported')).toBe(true);
+  });
+
+  it('carries no Meta mark: one neutral glyph for both sources', () => {
+    expect(copy.IMPORT_GLYPH).toBe('1F4E5');
+    // Not per-source, and not a brand mark: the same tray on every surface.
+    expect(typeof copy.IMPORT_GLYPH).toBe('string');
   });
 });

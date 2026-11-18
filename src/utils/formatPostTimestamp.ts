@@ -27,10 +27,12 @@
  *   formatPostTimestamp(t)       // "Sep 12, 3:04 PM" / "Sep 12, 2025, 3:04 PM"
  *   formatPostTimestampA11y(t)   // "September 12 at 3:04 PM"
  *   formatShortTime(t)           // "3:04 PM"
- *   formatDayLabel(t)            // "Today" / "Yesterday" / "Sep 12"
+ *   formatDayLabel(t)            // "Today" / "Yesterday" / "Sep 12" / "Jun 1, 2014"
  *   formatCompactTimestamp(t)    // "3:04 PM" (today) / "Yesterday" / "Sep 12"
  *   formatDateWithYear(t)        // "Mar 4, 2019"
  *   formatDateWithYearA11y(t)    // "March 4, 2019"
+ *   formatImportDate(t)          // "Jun 1, 2014"
+ *   formatImportDateA11y(t)      // "June 1, 2014"
  *   localDayKey(t)               // "2026-09-12"
  */
 
@@ -253,19 +255,27 @@ export function formatShortTime(timestamp: number): string {
 }
 
 /**
- * Day-separator label: "Today", "Yesterday", otherwise "Sep 12". Local
- * calendar-day comparison via dayBucket.
+ * Day-separator label: "Today", "Yesterday", "Sep 12" in the current year, and
+ * "Jun 1, 2014" in any other year. Local calendar-day comparison via dayBucket.
  *
- * Never shows a year — en-US output is pinned to the pre-#845 strings, so an
- * other-year date still reads "Jan 5". A year branch is a possible later
- * refinement, not a bug.
+ * The year branch is #919: a list can hold content from any year — an imported
+ * post from 2014, or a DM scrolled back past a year boundary — and a bare
+ * "Jun 1" over those rows claims a date that is eleven years off. The year is
+ * still dropped in the current year, where it would be noise, so the everyday
+ * separator is unchanged.
+ *
+ * The year uses the SHORT month, like every other header. It is chosen on the
+ * same `isCurrentYear` test {@link formatPostTimestamp} uses, so the separator
+ * and the timestamps under it agree on when a year is worth showing — including
+ * for an unrenderable `now`, where neither can name the current year and both
+ * show it.
  *
  * @param timestamp Epoch milliseconds.
  * @param now Epoch milliseconds that define "today". Defaults to Date.now();
  *   exists so tests can pin it.
  *
  * @example
- *   formatDayLabel(t)   // "Today" / "Yesterday" / "Sep 12"
+ *   formatDayLabel(t)   // "Today" / "Yesterday" / "Sep 12" / "Jun 1, 2014"
  *   formatDayLabel(NaN) // ""
  */
 export function formatDayLabel(timestamp: number, now: number = Date.now()): string {
@@ -275,7 +285,8 @@ export function formatDayLabel(timestamp: number, now: number = Date.now()): str
   const bucket = dayBucket(timestamp, now);
   if (bucket === 'today') return 'Today';
   if (bucket === 'yesterday') return 'Yesterday';
-  return shortDate(parts);
+  if (isCurrentYear(parts.year, now)) return shortDate(parts);
+  return `${shortDate(parts)}, ${parts.year}`;
 }
 
 /**
@@ -340,6 +351,79 @@ export function formatDateWithYearA11y(timestamp: number, zone: DateZone = 'loca
   const parts = toParts(timestamp, zone);
   if (parts === null) return '';
   return `${MONTHS_LONG[parts.monthIndex]} ${parts.day}, ${parts.year}`;
+}
+
+const MS_PER_DAY = 86_400_000;
+/** Milliseconds from UTC midnight to the synthetic noon the server serves. */
+const NOON_UTC_MS = MS_PER_DAY / 2;
+
+/**
+ * Which calendar an IMPORTED thread's served `createdAt` belongs to (#927 §8).
+ *
+ * The backend stores an imported post's original date as a calendar DAY and
+ * serves it as that day at exactly 12:00:00.000 UTC — a synthetic sort key,
+ * not an instant anything happened at. Read locally, it would show the wrong
+ * day to anyone far enough east or west, so it is read in UTC.
+ *
+ * The served value is `LEAST(noon-UTC sort key, insert instant)`
+ * (`Orbital-Backend/src/utils/threadSortKey.js`), which makes the exact
+ * 12:00:00.000 UTC test decisive rather than probabilistic:
+ *
+ *  - EXACTLY noon UTC means the noon key won the LEAST — the post is dated on
+ *    an earlier day than the import, or it is a same-day import run after
+ *    12:00 UTC. Either way the value is the synthetic key, so it is read in
+ *    UTC. This is every realistic archive row.
+ *  - ANYTHING ELSE is the clamp: a same-day import run BEFORE 12:00 UTC, whose
+ *    value is the real insert instant on the member's own clock. Read locally,
+ *    so the row agrees with the day header above it.
+ *
+ * Known effect of the first case, accepted: in UTC+12…+14 a SAME-DAY import
+ * run after 12:00 UTC is read in UTC and can print one day earlier than the
+ * "Today" header it sits under — the same off-by-a-day the past-dated rows
+ * have there, and for the same reason.
+ */
+function importDateZone(timestamp: number): DateZone {
+  if (!Number.isFinite(timestamp)) return 'local';
+  // Floored modulo: a pre-1970 timestamp is negative, and `%` keeps the sign.
+  const msIntoUtcDay = ((timestamp % MS_PER_DAY) + MS_PER_DAY) % MS_PER_DAY;
+  return msIntoUtcDay === NOON_UTC_MS ? 'utc' : 'local';
+}
+
+/**
+ * The date shown on an IMPORTED thread — "Jun 1, 2014". Always dated, never a
+ * clock time: the import carries a day, and the hour the server serves with it
+ * is a sort key rather than a time anything happened at. Showing "12:00 PM"
+ * beside an eleven-year-old post would be inventing a fact.
+ *
+ * The zone is picked per timestamp by {@link importDateZone}.
+ *
+ * Known and accepted (plan §8): in UTC+12…+14 a past-dated import's row reads
+ * one day EARLIER than the day header above it, because the header groups
+ * every row by the device-local day of `createdAt` while this one row is read
+ * in UTC. Pinned by a test. The alternative — grouping imports by a different
+ * calendar from their neighbours — would put two rows with the same visible
+ * date under two different headers.
+ *
+ * @param timestamp Epoch milliseconds, as served.
+ *
+ * @example
+ *   formatImportDate(Date.UTC(2014, 5, 1, 12, 0)) // "Jun 1, 2014" in any zone
+ *   formatImportDate(NaN)                         // ""
+ */
+export function formatImportDate(timestamp: number): string {
+  return formatDateWithYear(timestamp, importDateZone(timestamp));
+}
+
+/**
+ * Screen-reader form of {@link formatImportDate}: the month is spelled out.
+ *
+ * @param timestamp Epoch milliseconds, as served.
+ *
+ * @example
+ *   formatImportDateA11y(Date.UTC(2014, 5, 1, 12, 0)) // "June 1, 2014"
+ */
+export function formatImportDateA11y(timestamp: number): string {
+  return formatDateWithYearA11y(timestamp, importDateZone(timestamp));
 }
 
 /**

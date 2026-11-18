@@ -7137,6 +7137,121 @@ for (const file of miScanned) {
 }
 
 // ---------------------------------------------------------------------------
+// 35c. The import READ path (#927) — the display helpers stay silent, and
+//      `resolveImportDisplay`'s catch stays bare
+// ---------------------------------------------------------------------------
+//
+// The read path carries the same classes the write path does, one layer over:
+// the pure display helpers are handed a thread's DECRYPTED BODY (the headline
+// is derived from it) and the host of a link the member posted, and
+// `resolveImportDisplay` is handed the sealed import-meta ciphertext and
+// whatever an AES-GCM failure threw. None of it may reach the device log or a
+// Sentry extra, and none of these call sites has a diagnostic worth the risk:
+// the ONE signal the read path emits is a per-load COUNT, from
+// `loadThreadsForGroup`, which is deliberately outside this rule.
+//
+// Two different bars, because the two shapes fail differently:
+//
+//   - The helpers get the ABSOLUTE bar (zero console/captureError/Sentry),
+//     like `importErrors.ts` above: a line there would name `body`, `text` or
+//     `url` — its own idioms, not forbidden identifiers — and print the
+//     member's post text to logcat.
+//   - `resolveImportDisplay` gets a SHAPE pin. Its catch must stay BARE
+//     (`} catch {`), with no bound error: binding one is how a diagnostic gets
+//     written in the first place, and the only values in scope are ciphertext
+//     and a crypto failure reason. The catch body must also hold no log call.
+//
+// Both helpers are REQUIRED, not optional: they exist, and a scan that passes
+// because a file is missing is a scan that stops binding the day someone
+// renames one. A deleted or moved helper is a violation naming the path, so
+// the rule has to be repointed in the same commit. The read path's other
+// anti-vacuity floor is `resolveImportDisplay`, required BY NAME below.
+
+const MI_READ_ISSUE = '#927';
+
+/** #927's pure display helpers. Required — see above. */
+const MI_READ_SILENT_FILES = [
+  join(SRC, 'utils', 'threadHeadline.ts'),
+  join(SRC, 'utils', 'urlHost.ts'),
+];
+
+for (const file of MI_READ_SILENT_FILES) {
+  const raw = meRead(
+    file,
+    MI_LOG_RULE,
+    'that this pure display helper logs nothing at all',
+    MI_READ_ISSUE,
+  );
+  if (raw === null) continue;
+  const lines = meStripComments(raw).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!ME_LOG_CALL_RE.test(lines[i])) continue;
+    report(
+      file,
+      i + 1,
+      MI_LOG_RULE,
+      `a console/captureError/Sentry call in a pure display helper — these are handed a thread's DECRYPTED BODY and the member's own links, and a line naming only \`text\` or \`url\` still prints them to the device log (logcat, Console.app, Metro) or ships them as unscrubbable captureError extras. These helpers log nothing at all (${MI_READ_ISSUE})`,
+    );
+  }
+}
+
+{
+  const MI_READ_SERVICE = join(SRC, 'services', 'threadService.ts');
+  const miReadRaw = meRead(
+    MI_READ_SERVICE,
+    MI_LOG_RULE,
+    "that the import read path's envelope catch stays bare and silent",
+    MI_READ_ISSUE,
+  );
+  if (miReadRaw !== null) {
+    const code = meStripComments(miReadRaw);
+    const start = code.indexOf('function resolveImportDisplay(');
+    if (start === -1) {
+      violations.push(
+        `  ${relative('.', MI_READ_SERVICE)}:0  [${MI_LOG_RULE}]  \`resolveImportDisplay\` not found — the read path's envelope handling moved or was renamed, so the bare-catch pin is scanning nothing. Point this rule at the new home in the same commit (${MI_READ_ISSUE})`,
+      );
+    } else {
+      // The function body ends at the first `}` in column 0 after its start,
+      // which is this file's (and prettier's) formatting for a top-level
+      // function. The slice is deliberately generous: a catch anywhere in it
+      // is a catch in this function.
+      const endRel = code.slice(start).search(/\n\}/);
+      const body = endRel === -1 ? code.slice(start) : code.slice(start, start + endRel);
+      const lineOf = (index) => code.slice(0, index).split('\n').length;
+
+      const bound = body.match(/catch\s*\(/);
+      if (bound) {
+        report(
+          MI_READ_SERVICE,
+          lineOf(start + bound.index),
+          MI_LOG_RULE,
+          `\`catch (e)\` in \`resolveImportDisplay\` — this catch must stay BARE (\`} catch {\`). The only values in scope are the sealed import-meta ciphertext and a crypto failure reason, neither of which may be logged, reported or carried into a message; binding the error is the first step to printing it (${MI_READ_ISSUE})`,
+        );
+      }
+
+      const bare = /\}\s*catch\s*\{/.test(body);
+      if (!bare && !bound) {
+        violations.push(
+          `  ${relative('.', MI_READ_SERVICE)}:${lineOf(start)}  [${MI_LOG_RULE}]  \`resolveImportDisplay\` has no \`} catch {\` — opening the import-meta envelope must stay inside a bare catch, or one tampered envelope rejects the whole list load and blanks the orbit (${MI_READ_ISSUE})`,
+        );
+      }
+
+      const bodyLines = body.split('\n');
+      const bodyStartLine = lineOf(start);
+      for (let i = 0; i < bodyLines.length; i++) {
+        if (!ME_LOG_CALL_RE.test(bodyLines[i])) continue;
+        report(
+          MI_READ_SERVICE,
+          bodyStartLine + i,
+          MI_LOG_RULE,
+          `a console/captureError/Sentry call inside \`resolveImportDisplay\` — a failed envelope is reported ONCE PER LOAD as a bare count by \`loadThreadsForGroup\`, never per row and never with a value. A key rotation fails every envelope in the orbit at once, and this is the line that would turn that into a log flood carrying ciphertext (${MI_READ_ISSUE})`,
+        );
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

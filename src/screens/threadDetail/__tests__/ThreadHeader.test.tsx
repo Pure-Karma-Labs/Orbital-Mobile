@@ -268,3 +268,130 @@ describe('ThreadHeader — author handle (#888)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Imported posts (#927)
+// ---------------------------------------------------------------------------
+
+describe('ThreadHeader — imported posts', () => {
+  /** 2014-06-01T12:00:00.000Z — the server's synthetic key for an import. */
+  const IMPORTED_AT = Date.UTC(2014, 5, 1, 12, 0, 0, 0);
+
+  /** Every string a host Text renders. */
+  function texts(renderer: ReactTestRenderer): string[] {
+    return renderer.root
+      .findAll((n) => typeof n.type === 'string' && typeof n.props.children === 'string')
+      .map((n) => n.props.children as string);
+  }
+
+  function captions(renderer: ReactTestRenderer) {
+    return renderer.root.findAll(
+      (n) => typeof n.type === 'string' && n.props.testID === 'thread-imported-caption',
+    );
+  }
+
+  it('captions the post with the source it came from', () => {
+    const cases: ReadonlyArray<readonly ['facebook' | 'instagram', string]> = [
+      ['facebook', 'Imported from Facebook'],
+      ['instagram', 'Imported from Instagram'],
+    ];
+
+    for (const [source, expected] of cases) {
+      const renderer = renderHeader({
+        isImport: true,
+        importSource: source,
+        createdAt: IMPORTED_AT,
+      });
+      expect(captions(renderer)).toHaveLength(1);
+      expect(captions(renderer)[0].props.accessibilityLabel).toBe(expected);
+      expect(texts(renderer)).toContain(expected);
+    }
+  });
+
+  it('says "Imported post" when the envelope gave no source', () => {
+    const renderer = renderHeader({
+      isImport: true,
+      importSource: null,
+      createdAt: IMPORTED_AT,
+    });
+    expect(texts(renderer)).toContain('Imported post');
+    // Never a guess, and never a platform it cannot stand behind.
+    expect(texts(renderer).filter((t) => /Facebook|Instagram/.test(t))).toHaveLength(0);
+  });
+
+  it('renders no caption at all for a native post', () => {
+    expect(captions(renderHeader())).toHaveLength(0);
+    expect(captions(renderHeader({ isImport: false, importSource: 'facebook' }))).toHaveLength(0);
+  });
+
+  it('shows the original date and never a clock time', () => {
+    const renderer = renderHeader({
+      isImport: true,
+      importSource: 'facebook',
+      createdAt: IMPORTED_AT,
+    });
+
+    expect(texts(renderer)).toContain('Jun 1, 2014');
+    expect(texts(renderer).filter((t) => /\d{1,2}:\d{2} (AM|PM)/.test(t))).toHaveLength(0);
+    // The long form for a screen reader, on the timestamp's own element.
+    expect(
+      renderer.root.findAll(
+        (n) => typeof n.type === 'string' && n.props.accessibilityLabel === 'June 1, 2014',
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('leaves a native post’s timestamp exactly as it was', () => {
+    const renderer = renderHeader({ createdAt: POSTED_AT });
+
+    expect(texts(renderer)).toContain(formatPostTimestamp(POSTED_AT));
+    expect(
+      renderer.root.findAll(
+        (n) =>
+          typeof n.type === 'string' &&
+          n.props.accessibilityLabel === formatPostTimestampA11y(POSTED_AT),
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it('is not touchable, and sits inside no control', () => {
+    const renderer = renderHeader({
+      isImport: true,
+      importSource: 'facebook',
+      createdAt: IMPORTED_AT,
+    });
+
+    const caption = findHostByTestId(renderer.root, 'thread-imported-caption');
+    expect(caption.props.onPress).toBeUndefined();
+
+    const pressNodes = renderer.root.findAll((n) => typeof n.props.onPress === 'function');
+    expect(pressNodes.length).toBeGreaterThan(0); // the author handle is still a control
+    for (const pressNode of pressNodes) {
+      expect(
+        pressNode.findAll(
+          (n) => typeof n.type === 'string' && n.props.testID === 'thread-imported-caption',
+        ),
+      ).toHaveLength(0);
+    }
+  });
+
+  it('still renders no title line for an empty title', () => {
+    // Positive control: the title line is rendered when there IS a title.
+    expect(texts(renderHeader({ title: 'Thread title' }))).toContain('Thread title');
+
+    for (const title of ['', null]) {
+      const renderer = renderHeader({
+        title,
+        body: 'Back from the lake.',
+        isImport: true,
+        importSource: 'facebook',
+        createdAt: IMPORTED_AT,
+      });
+      // The body is rendered once, as the body. The derived headline belongs
+      // to the top bar; printing it here too would duplicate the first line
+      // of the post directly above itself.
+      expect(texts(renderer).filter((t) => t === 'Back from the lake.')).toHaveLength(1);
+      expect(texts(renderer)).toContain('Imported from Facebook');
+    }
+  });
+});

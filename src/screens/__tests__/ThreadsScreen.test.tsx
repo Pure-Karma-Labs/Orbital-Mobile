@@ -9,6 +9,7 @@ import { ThemeProvider } from '../../theme';
 import { ThreadsScreen } from '../ThreadsScreen';
 import { getThreadState } from '../../utils/threadState';
 import { formatDayLabel } from '../../utils/formatPostTimestamp';
+import { makeThread as makeThreadFixture } from '../../testUtils/makeThread';
 import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -336,7 +337,10 @@ describe('ThreadsScreen — with thread data', () => {
     };
     storesMock.useThreads.mockReturnValue({
       threads: {
-        'thread-1': {
+        // The shared builder, not a literal: `Thread` gained three required
+        // fields in #927, and a literal here would have gone on describing a
+        // row no mapper can produce (this mock is untyped).
+        'thread-1': makeThreadFixture({
           id: 'thread-1',
           conversationId: 'group-1',
           authorId: 'user-1',
@@ -344,13 +348,11 @@ describe('ThreadsScreen — with thread data', () => {
           title: "Farmer's market on Saturday?",
           body: null,
           contentType: 'text',
-          pinned: false,
           replyCount: 3,
           lastReplyAt: now,
           createdAt: now,
           updatedAt: now,
-          syncStatus: 'synced',
-        },
+        }),
       },
       threadIdsByConversation: { 'group-1': ['thread-1'] },
       threadLastViewedAt: {},
@@ -610,6 +612,183 @@ describe('ThreadsScreen — with thread data', () => {
     expect(alertSpy).toHaveBeenCalledWith('Thread', expect.any(String), expect.any(Array));
     alertSpy.mockRestore();
   });
+
+  // -------------------------------------------------------------------------
+  // Derived headlines and imported rows (#927)
+  // -------------------------------------------------------------------------
+
+  /** Re-point the threads mock at one thread built from the base fixture. */
+  function renderWithThread(overrides: Partial<Thread>): ReactTestRenderer {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    const base = storesMock.useThreads() as {
+      threads: Record<string, Thread>;
+    } & Record<string, unknown>;
+    storesMock.useThreads.mockReturnValue({
+      ...base,
+      threads: { 'thread-1': { ...base.threads['thread-1'], ...overrides } },
+    });
+    return renderThreadsScreen();
+  }
+
+  /** Every string a node renders, in order, flattened across nesting. */
+  function flattenText(children: unknown): string {
+    if (typeof children === 'string') return children;
+    if (Array.isArray(children)) return children.map(flattenText).join('');
+    return '';
+  }
+
+  /** The row's one-line meta `Text` — the line that truncates. */
+  function metaLine(renderer: ReactTestRenderer) {
+    const nodes = renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .filter((node) => node.props.numberOfLines === 1 && Array.isArray(node.props.children));
+    expect(nodes.length).toBeGreaterThan(0);
+    return nodes[0];
+  }
+
+  /**
+   * HOST nodes only: `findAll` by testID also matches the component node that
+   * passes the prop down, so a mounted indicator would otherwise count twice.
+   */
+  function indicators(renderer: ReactTestRenderer) {
+    return renderer.root.findAll(
+      (n) => typeof n.type === 'string' && n.props.testID === 'thread-imported-indicator',
+    );
+  }
+
+  /** 2014-06-01T12:00:00.000Z — the server's synthetic key for an import. */
+  const IMPORTED_AT = Date.UTC(2014, 5, 1, 12, 0, 0, 0);
+
+  it('derives the row title from the body when there is no title', () => {
+    const renderer = renderWithThread({ title: '', body: 'Back from the lake.' });
+
+    expect(threadRow(renderer).props.accessibilityLabel).toBe('Thread: Back from the lake.');
+    const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
+    expect(allText.some((n) => n.props.children === 'Back from the lake.')).toBe(true);
+  });
+
+  it('derives a photo count and a link host', () => {
+    const photos = renderWithThread({
+      title: '',
+      body: null,
+      contentType: 'media',
+      mediaCount: 3,
+    });
+    expect(threadRow(photos).props.accessibilityLabel).toBe('Thread: 3 photos');
+
+    const link = renderWithThread({ title: '', body: 'https://www.example.com/article' });
+    expect(threadRow(link).props.accessibilityLabel).toBe('Thread: example.com');
+  });
+
+  it('names the thread in the mute menu with the derived headline', () => {
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    const renderer = renderWithThread({ title: '', body: 'Back from the lake.' });
+
+    act(() => {
+      threadRow(renderer).props.onLongPress();
+    });
+
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Back from the lake.',
+      expect.any(String),
+      expect.any(Array),
+    );
+    alertSpy.mockRestore();
+  });
+
+  it('badges an imported row and says the source and date out loud', () => {
+    const renderer = renderWithThread({
+      title: '',
+      body: 'Back from the lake.',
+      isImport: true,
+      importSource: 'facebook',
+      createdAt: IMPORTED_AT,
+      lastReplyAt: null,
+    });
+
+    expect(indicators(renderer)).toHaveLength(1);
+    expect(threadRow(renderer).props.accessibilityLabel).toBe(
+      'Thread: Back from the lake., imported from Facebook, June 1, 2014',
+    );
+  });
+
+  it('shows the original date, with its year and no clock time', () => {
+    const renderer = renderWithThread({
+      isImport: true,
+      importSource: 'facebook',
+      createdAt: IMPORTED_AT,
+      lastReplyAt: null,
+    });
+
+    const meta = flattenText(metaLine(renderer).props.children);
+    expect(meta).toContain('Jun 1, 2014');
+    expect(meta).not.toMatch(/\d{1,2}:\d{2} (AM|PM)/);
+  });
+
+  it('leaves a native row with its clock time and no badge', () => {
+    const renderer = renderThreadsScreen();
+
+    expect(indicators(renderer)).toHaveLength(0);
+    const meta = flattenText(metaLine(renderer).props.children);
+    expect(meta).toMatch(/\d{1,2}:\d{2} (AM|PM)/);
+    expect(threadRow(renderer).props.accessibilityLabel).toBe(
+      "Thread: Farmer's market on Saturday?",
+    );
+  });
+
+  it('says "imported post" when the source could not be read', () => {
+    const renderer = renderWithThread({
+      isImport: true,
+      importSource: null,
+      createdAt: IMPORTED_AT,
+      lastReplyAt: null,
+    });
+
+    expect(indicators(renderer)).toHaveLength(1);
+    expect(threadRow(renderer).props.accessibilityLabel).toBe(
+      "Thread: Farmer's market on Saturday?, imported post, June 1, 2014",
+    );
+  });
+
+  // The reason the glyph is a sibling of the meta line rather than its last
+  // child: a 64-character display name truncates that line, and anything
+  // inside it goes with the text.
+  it('keeps the badge outside the truncating meta line, under a 64-char name', () => {
+    const renderer = renderWithThread({
+      authorUsername: 'a'.repeat(64),
+      isImport: true,
+      importSource: 'instagram',
+      createdAt: IMPORTED_AT,
+      lastReplyAt: null,
+    });
+
+    expect(indicators(renderer)).toHaveLength(1);
+    // Structural, not visual: the indicator is not a descendant of the Text
+    // that truncates, so no name length can take it off screen.
+    const meta = metaLine(renderer);
+    expect(meta.findAll((n) => n.props.testID === 'thread-imported-indicator')).toHaveLength(0);
+    expect(flattenText(meta.props.children)).toContain('a'.repeat(64));
+    expect(threadRow(renderer).props.accessibilityLabel).toContain('imported from Instagram');
+  });
+
+  it('carries the STORED title into navigation, never the derived headline', () => {
+    const renderer = renderWithThread({
+      title: '',
+      body: 'Back from the lake.',
+      isImport: true,
+      importSource: 'facebook',
+      createdAt: IMPORTED_AT,
+    });
+
+    act(() => {
+      threadRow(renderer).props.onPress();
+    });
+
+    expect(mockNavigation.push).toHaveBeenCalledWith('ThreadDetail', {
+      threadId: 'thread-1',
+      threadTitle: undefined,
+    });
+  });
 });
 
 describe('ThreadsScreen — focus lifecycle', () => {
@@ -643,21 +822,21 @@ describe('ThreadsScreen — activity ordering', () => {
   const DAY = 24 * 60 * 60 * 1000;
   const nowTs = Date.now();
 
-  const baseThread = {
+  const baseThread = makeThreadFixture({
     id: 'thread-base',
     conversationId: 'group-1',
     authorId: 'user-1',
     authorUsername: 'alice',
     title: 'Base thread',
     body: null,
-    contentType: 'text' as const,
+    contentType: 'text',
     pinned: false,
     replyCount: 0,
-    lastReplyAt: null as number | null,
+    lastReplyAt: null,
     createdAt: nowTs,
     updatedAt: nowTs,
-    syncStatus: 'synced' as const,
-  };
+    syncStatus: 'synced',
+  });
 
   function setThreads(threads: Record<string, Thread>, ids: string[]): void {
     const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
@@ -699,14 +878,14 @@ describe('ThreadsScreen — activity ordering', () => {
           createdAt: nowTs - 5 * DAY,
           lastReplyAt: nowTs,
           replyCount: 1,
-        } as Thread,
+        },
         'thread-new': {
           ...baseThread,
           id: 'thread-new',
           title: 'Newer quiet thread',
           createdAt: nowTs - 60_000,
           lastReplyAt: null,
-        } as Thread,
+        },
       },
       // Store order deliberately favours the wrong answer.
       ['thread-new', 'thread-old'],
@@ -736,14 +915,14 @@ describe('ThreadsScreen — activity ordering', () => {
           createdAt: nowTs,
           lastReplyAt: NaN,
           replyCount: 1,
-        } as Thread,
+        },
         'thread-older': {
           ...baseThread,
           id: 'thread-older',
           title: 'Older plain thread',
           createdAt: olderCreatedAt,
           lastReplyAt: null,
-        } as Thread,
+        },
       },
       // Store order deliberately favours the wrong answer.
       ['thread-older', 'thread-corrupt'],
@@ -785,7 +964,7 @@ describe('ThreadsScreen — activity ordering', () => {
           createdAt,
           lastReplyAt: nowTs,
           replyCount: 1,
-        } as Thread,
+        },
       },
       ['thread-bumped'],
     );
@@ -816,7 +995,7 @@ describe('ThreadsScreen — activity ordering', () => {
 // ---------------------------------------------------------------------------
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
+  return makeThreadFixture({
     id: 'thread-1',
     conversationId: 'group-1',
     authorId: 'user-1',
@@ -830,7 +1009,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     updatedAt: 10_000,
     syncStatus: 'synced',
     ...overrides,
-  } as Thread;
+  });
 }
 
 describe('getThreadState', () => {
@@ -865,6 +1044,23 @@ describe('getThreadState', () => {
     expect(getThreadState(thread, {}, 25_000)).toBe('unread');
     expect(getThreadState(thread, {}, 35_000)).toBe('read');
   });
+
+  // #927: the server leaves imported threads out of the orbit's unread_count,
+  // so a dotted import row would sit next to an orbit badge of 0.
+  it('returns read for an unreplied import, however new, with a native control', () => {
+    const imported = makeThread({ isImport: true, createdAt: 30_000, lastReplyAt: null });
+    expect(getThreadState(imported, {}, 25_000)).toBe('read');
+    // Identical timestamps, not an import.
+    expect(
+      getThreadState(makeThread({ createdAt: 30_000, lastReplyAt: null }), {}, 25_000),
+    ).toBe('unread');
+  });
+
+  it('returns unread for an import whose REPLY is newer than the watermark', () => {
+    const replied = makeThread({ isImport: true, createdAt: 30_000, lastReplyAt: 28_000 });
+    expect(getThreadState(replied, {}, 25_000)).toBe('unread');
+    expect(getThreadState(replied, {}, 29_000)).toBe('read');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -874,7 +1070,7 @@ describe('getThreadState', () => {
 describe('ThreadsScreen — block filtering', () => {
   const now = Date.now();
 
-  const threadByBlocked: Thread = {
+  const threadByBlocked: Thread = makeThreadFixture({
     id: 'thread-blocked',
     conversationId: 'group-1',
     authorId: 'u-blocked',
@@ -888,9 +1084,9 @@ describe('ThreadsScreen — block filtering', () => {
     createdAt: now,
     updatedAt: now,
     syncStatus: 'synced',
-  } as Thread;
+  });
 
-  const threadByOk: Thread = {
+  const threadByOk: Thread = makeThreadFixture({
     id: 'thread-ok',
     conversationId: 'group-1',
     authorId: 'u-ok',
@@ -904,7 +1100,7 @@ describe('ThreadsScreen — block filtering', () => {
     createdAt: now,
     updatedAt: now,
     syncStatus: 'synced',
-  } as Thread;
+  });
 
   beforeEach(() => {
     const storesMock = jest.requireMock('../../stores') as {
@@ -1234,7 +1430,7 @@ describe('ThreadsScreen — group key (#912)', () => {
 
     /** The threads slice, with or without this orbit's one row. */
     function threadsSlice(withRows: boolean) {
-      const thread: Thread = {
+      const thread: Thread = makeThreadFixture({
         id: 'thread-1',
         conversationId: 'group-1',
         authorId: 'user-1',
@@ -1248,7 +1444,7 @@ describe('ThreadsScreen — group key (#912)', () => {
         createdAt: now,
         updatedAt: now,
         syncStatus: 'synced',
-      };
+      });
       return {
         threads: withRows ? ({ 'thread-1': thread } as Record<string, Thread>) : {},
         threadIdsByConversation: withRows ? { 'group-1': ['thread-1'] } : {},

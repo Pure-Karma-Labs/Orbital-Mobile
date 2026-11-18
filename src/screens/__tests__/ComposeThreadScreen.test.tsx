@@ -156,6 +156,7 @@ import {
   ValidationError,
 } from '../../services/api/errors';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
+import { makeThread } from '../../testUtils/makeThread';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
 const mockCreateNewThread = createNewThread as jest.Mock;
 
@@ -317,21 +318,21 @@ describe('ComposeThreadScreen — validation', () => {
 });
 
 describe('ComposeThreadScreen — submission', () => {
-  const fakeThread = {
+  const fakeThread = makeThread({
     id: 'thread-123',
     conversationId: 'group-1',
     authorId: 'user-1',
     authorUsername: 'alice',
     title: 'My Title',
     body: 'Some body text',
-    contentType: 'text' as const,
+    contentType: 'text',
     pinned: false,
     replyCount: 0,
     lastReplyAt: null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    syncStatus: 'synced' as const,
-  };
+    syncStatus: 'synced',
+  });
 
   it('calls createNewThread with correct params on submit', async () => {
     mockCreateNewThread.mockResolvedValue(fakeThread);
@@ -400,21 +401,21 @@ describe('ComposeThreadScreen — submission', () => {
 
 describe('ComposeThreadScreen — loading state', () => {
   it('calls createNewThread once and replaces to ThreadDetail on success', async () => {
-    const fakeThread = {
+    const fakeThread = makeThread({
       id: 'thread-xyz',
       conversationId: 'group-1',
       authorId: 'user-1',
       authorUsername: 'alice',
       title: 'Hello',
       body: 'World',
-      contentType: 'text' as const,
+      contentType: 'text',
       pinned: false,
       replyCount: 0,
       lastReplyAt: null,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      syncStatus: 'synced' as const,
-    };
+      syncStatus: 'synced',
+    });
     mockCreateNewThread.mockResolvedValue(fakeThread);
     const renderer = renderScreen();
 
@@ -770,21 +771,21 @@ describe('ComposeThreadScreen — upload reuse cache and unmount safety', () => 
     },
   ];
 
-  const fakeThread = {
+  const fakeThread = makeThread({
     id: 'thread-123',
     conversationId: 'group-1',
     authorId: 'user-1',
     authorUsername: 'alice',
     title: 'My Title',
     body: 'Some body text',
-    contentType: 'text' as const,
+    contentType: 'text',
     pinned: false,
     replyCount: 0,
     lastReplyAt: null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    syncStatus: 'synced' as const,
-  };
+    syncStatus: 'synced',
+  });
 
   /** Fill both inputs and press Post, flushing the async handler. */
   async function fillAndPost(renderer: ReactTestRenderer): Promise<void> {

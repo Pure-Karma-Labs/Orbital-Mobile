@@ -114,7 +114,8 @@ const WIRE_KEY_EXPANSION_BYTES = 12;
  *
  * Frozen allowlist because `applyBatchResults` allowlists the STATUS but
  * passes `code` straight through: without this, a widened server vocabulary
- * would be persisted locally and later rendered by #927's per-code copy table.
+ * would be persisted locally and later rendered through `importCopy.ts`'s
+ * per-code table.
  * Anything else becomes the local {@link IMPORT_RESULT_UNKNOWN} sentinel.
  */
 export const IMPORT_ITEM_CODES = Object.freeze({

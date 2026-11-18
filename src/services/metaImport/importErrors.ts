@@ -103,7 +103,8 @@ export type ClassifiedPauseCause = Exclude<PauseCause, 'background'>;
  *
  * Frozen and client-defined: these never come from the server (the server's
  * three per-item codes are `IMPORT_ITEM_CODES` in `./importBatch`), so a
- * widened server vocabulary can never reach #927's copy table through here.
+ * widened server vocabulary can never reach the member-facing copy in
+ * `src/screens/import/importCopy.ts` through here.
  * `QUOTA` is the one that is not permanent — the orbit was full at media
  * complete, and importing again later can succeed.
  *

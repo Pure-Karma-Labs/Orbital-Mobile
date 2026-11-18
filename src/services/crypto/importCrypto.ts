@@ -80,11 +80,13 @@
  * `jest.useFakeTimers()` must pass `yieldEvery: 0`, or the `setTimeout` will
  * never fire and the parse will hang.
  *
- * ## Removal trigger
+ * ## The read path
  *
- * {@link openImportMeta} and {@link parseImportMetaPlaintext} have no
- * production caller until #927. If #927 closes unmerged, delete them and their
- * tests.
+ * {@link openImportMetaWithKey} is the read path's door (#927), called once per
+ * fetched row by `threadService.resolveImportDisplay` with the group key that
+ * load already holds. {@link openImportMeta} is the key-fetching wrapper and
+ * {@link parseImportMetaPlaintext} the plaintext-only entry; both are kept for
+ * callers that do not already have a key or a ciphertext.
  */
 
 import { hkdfSha256, hmacSha256 } from 'orbital-signal';
@@ -306,7 +308,7 @@ export function importKeyToWire(importKey: Uint8Array): string {
  * Tolerant about unknown keys (a later version may add fields) and strict
  * about the three it reads: a wrong `v`, a non-object, a missing field, a
  * `source` outside the two literals, or a non-safe-integer date all give
- * `null`. Exported for #927, which may hold the plaintext already.
+ * `null`. Exported for a caller that already holds the plaintext.
  */
 export function parseImportMetaPlaintext(json: string): ImportMetaV1 | null {
   let value: unknown;
@@ -342,8 +344,9 @@ export function parseImportMetaPlaintext(json: string): ImportMetaV1 | null {
  * raises itself is `'terminal-for-run'` — a changed key, a closed session, a
  * bad userId and every {@link ImportCryptoInvariantError} are conditions no
  * retry can clear, and an import-meta authentication failure on the WRITE path
- * means the envelope we just produced did not round-trip. #927 decides its own
- * read-path handling of that error.
+ * means the envelope we just produced did not round-trip. The READ path does
+ * not classify at all: `threadService.resolveImportDisplay` catches that error
+ * and degrades the row to an unknown source (#927).
  *
  * That claim is only true while this module raises nothing untyped: a bare
  * `new Error(...)` here would classify as `null` and be retried for the rest

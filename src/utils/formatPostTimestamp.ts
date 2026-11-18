@@ -365,15 +365,22 @@ const NOON_UTC_MS = MS_PER_DAY / 2;
  * not an instant anything happened at. Read locally, it would show the wrong
  * day to anyone far enough east or west, so it is read in UTC.
  *
- * A post imported with TODAY's date is different: the server clamps it to the
- * real insert instant, which is a genuine moment on the member's own clock and
- * all but never lands on that exact key. Those are read locally, so the row
- * agrees with the day header above it.
+ * The served value is `LEAST(noon-UTC sort key, insert instant)`
+ * (`Orbital-Backend/src/utils/threadSortKey.js`), which makes the exact
+ * 12:00:00.000 UTC test decisive rather than probabilistic:
  *
- * The test is exact — 12:00:00.000 UTC to the millisecond. A clamped instant
- * that happens to land on it (odds of one in 86.4 million) reads as the UTC
- * day it already is, which is the same date it would have shown anyway in
- * every zone from UTC-12 to UTC+12.
+ *  - EXACTLY noon UTC means the noon key won the LEAST — the post is dated on
+ *    an earlier day than the import, or it is a same-day import run after
+ *    12:00 UTC. Either way the value is the synthetic key, so it is read in
+ *    UTC. This is every realistic archive row.
+ *  - ANYTHING ELSE is the clamp: a same-day import run BEFORE 12:00 UTC, whose
+ *    value is the real insert instant on the member's own clock. Read locally,
+ *    so the row agrees with the day header above it.
+ *
+ * Known effect of the first case, accepted: in UTC+12…+14 a SAME-DAY import
+ * run after 12:00 UTC is read in UTC and can print one day earlier than the
+ * "Today" header it sits under — the same off-by-a-day the past-dated rows
+ * have there, and for the same reason.
  */
 function importDateZone(timestamp: number): DateZone {
   if (!Number.isFinite(timestamp)) return 'local';

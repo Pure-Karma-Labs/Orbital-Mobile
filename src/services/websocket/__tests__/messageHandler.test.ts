@@ -322,6 +322,11 @@ describe('new_thread broadcast', () => {
     expect(thread.body).toBe('Decrypted Body');
     expect(thread.syncStatus).toBe('synced');
     expect(thread.replyCount).toBe(0);
+    // A live broadcast is never an import (#927): an import creates its
+    // threads silently and announces itself with `import_completed`.
+    expect(thread.isImport).toBe(false);
+    expect(thread.importSource).toBeNull();
+    expect(thread.mediaCount).toBe(0);
   });
 
   it('deduplicates by threadId', async () => {

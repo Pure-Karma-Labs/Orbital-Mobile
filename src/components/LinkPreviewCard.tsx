@@ -12,6 +12,7 @@ import {
 import { useTheme } from '../theme';
 import { useLinkPreview } from '../hooks/useLinkPreview';
 import { OrbitalSpinner } from './OrbitalSpinner';
+import { extractUrlHost } from '../utils/urlHost';
 
 interface LinkPreviewCardProps {
   text: string | null;
@@ -101,12 +102,13 @@ export function LinkPreviewCard({
 
   if (!preview.title && !preview.description) return null;
 
-  let domain = '';
-  try {
-    domain = new URL(preview.url).hostname.replace(/^www\./, '');
-  } catch {
-    /* ignore */
-  }
+  // One definition of "host", shared with the thread headline (#927 §7). It
+  // replaced `new URL(...).hostname` here: RN's URL is a shim that differs
+  // from the Node implementation Jest runs against, so what this card showed
+  // on a device was never quite what its test asserted. For an ordinary
+  // http(s) URL the two agree — this one additionally drops userinfo, a port
+  // and a trailing root dot, none of which belong on the domain line.
+  const domain = extractUrlHost(preview.url) ?? '';
 
   const handlePress = () => {
     Linking.openURL(preview.url).catch(() => {});

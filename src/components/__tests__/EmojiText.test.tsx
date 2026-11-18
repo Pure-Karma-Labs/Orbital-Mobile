@@ -234,7 +234,7 @@ describe('EmojiText', () => {
       allText.some(
         (node) =>
           typeof node.props.children === 'string' &&
-          node.props.children.includes('https://example.com'),
+          /https:\/\/example\.com/.test(node.props.children),
       ),
     ).toBe(true);
   });

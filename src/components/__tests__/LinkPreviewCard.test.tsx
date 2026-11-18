@@ -185,7 +185,7 @@ describe('LinkPreviewCard', () => {
     const allText = renderer.root.findAllByType('Text' as unknown as React.ComponentType);
     const domainNode = allText.find(
       (node) =>
-        typeof node.props.children === 'string' && node.props.children.includes('example.com'),
+        typeof node.props.children === 'string' && /example\.com/.test(node.props.children),
     );
     expect(domainNode).toBeUndefined();
   });

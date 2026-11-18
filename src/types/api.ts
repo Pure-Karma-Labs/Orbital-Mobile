@@ -886,7 +886,11 @@ export type ImportSourceWire = 'facebook' | 'instagram';
 export interface ImportAllowance {
   postsUsed: number;
   bytesUsed: number;
-  /** 5000 today (`IMPORT_POSTS_LIMIT`). Read it, never hardcode it. */
+  /**
+   * 5000 after Backend B#337 (1000 on servers before it) —
+   * `IMPORT_POSTS_LIMIT`. Read it, never hardcode it: a client that assumed
+   * either number would be wrong against half the fleet during the rollout.
+   */
   postsLimit: number;
   /** 2 GiB today (`IMPORT_BYTES_LIMIT`). */
   bytesLimit: number;

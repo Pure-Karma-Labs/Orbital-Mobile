@@ -1626,10 +1626,10 @@ describe('the import pre-check', () => {
     },
   );
 
-  it('asks nothing when neither source has used a post', async () => {
+  it('asks nothing when THIS source has used no post', async () => {
     // Every import thread is charged to `posts_used`, and the only refund
-    // (`admin:delete-import`) DELETES the threads it refunds — so zero across
-    // both buckets means this member has no import thread here to match.
+    // (`admin:delete-import`) DELETES the threads it refunds — so this bucket
+    // reading zero means the member has no thread here that could match.
     mockGetGroupImports.mockResolvedValue(groupImports({ lookupMax: 1000 }));
     parseEmitting(2);
 
@@ -1639,9 +1639,13 @@ describe('the import pre-check', () => {
     expect(importStore.getState().preflight?.alreadyPresent).toBe(0);
   });
 
-  it('asks on the OTHER source alone having used posts', async () => {
-    // Keys are not source-scoped: a key created under an Instagram session is
-    // found while a Facebook archive is being parsed.
+  it('asks nothing when only the OTHER source has used posts', async () => {
+    // The ROUTE does not filter by source — but the key does its own
+    // filtering: `import_key = hmac(K_import, source ‖ 0x00 ‖ sourceItemId)`
+    // (`importCrypto.ts`'s `deriveImportKey`), so a Facebook archive's keys
+    // can only ever collide with Facebook-imported threads. Asking about
+    // Instagram's 3 posts could not return a single match, and would send
+    // this archive's key fingerprints pre-consent for nothing.
     mockGetGroupImports.mockResolvedValue(
       groupImports({ lookupMax: 1000, allowances: allowances({ instagram: allowance(3) }) }),
     );
@@ -1649,7 +1653,8 @@ describe('the import pre-check', () => {
 
     await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
-    expect(mockLookupImportKeys).toHaveBeenCalledTimes(1);
+    expect(mockLookupImportKeys).not.toHaveBeenCalled();
+    expect(soleJobSource()).toBe('facebook');
   });
 
   it("asks nothing when THIS source's bucket refuses the archive even if every post matched", async () => {
@@ -1736,6 +1741,27 @@ describe('the import pre-check', () => {
     expect(itemRows().every((row) => row.status === 'pending')).toBe(true);
     expect(importStore.getState().preflight).toBeNull();
     expect(soleJob().declared_posts).toBeNull();
+  });
+
+  it('publishes nothing when the member CANCELS mid-lookup', async () => {
+    parseEmitting(3);
+    mockLookupImportKeys.mockImplementation(async () => {
+      cancelImport();
+      return { existing: [wireKey(0)] };
+    });
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    // A Cancel aborts the parse controller and leaves `liveToken` ALONE, and
+    // the pre-check's catch-all swallows the resulting AbortError by design —
+    // so a token-only gate after it published `ready` plus a full preflight
+    // for a parse the member had already cancelled.
+    expect(result.kind).toBe('cancelled');
+    expect(
+      harness.sqlite.prepare("SELECT COUNT(*) AS n FROM import_jobs WHERE status = 'ready'").get(),
+    ).toEqual({ n: 0 });
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().preflight).toBeNull();
   });
 
   it('aborts the request with the parse, and passes the signal through', async () => {

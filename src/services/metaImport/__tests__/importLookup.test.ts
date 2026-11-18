@@ -24,6 +24,9 @@ jest.mock('../../../database/repositories/importRepository', () => ({
 jest.mock('../../crypto/importCrypto', () => ({
   importKeyToWire: (bytes: Uint8Array) => {
     if (bytes.length !== 16) throw new Error('import_key must be exactly 16 bytes');
+    // The sentinel below. The literal is inline because a `jest.mock` factory
+    // is hoisted above every const in this file.
+    if (bytes[0] === 0xee) return Buffer.from(bytes).toString('base64url');
     return Buffer.from(bytes).toString('base64');
   },
 }));
@@ -42,6 +45,19 @@ function key(fill: number): Uint8Array {
 function wire(fill: number): string {
   return Buffer.from(key(fill)).toString('base64');
 }
+
+/**
+ * The fill byte the mocked encoder answers with a NON-CANONICAL string
+ * (base64url, so 22 chars and no `==`).
+ *
+ * It is the only way to reach `CANONICAL_IMPORT_KEY_WIRE` at all. The real
+ * `importKeyToWire` throws on anything that is not 16 bytes and otherwise
+ * emits standard padded base64, so that regex is unreachable behind today's
+ * encoder: it is defence-in-depth against a future one (a base64url switch,
+ * say) sending the server a key it refuses the WHOLE request over. Pinning it
+ * through a sentinel is what keeps the guard from rotting into dead code.
+ */
+const NON_CANONICAL_FILL = 0xee;
 
 /** One row as `getPendingImportKeyPage` returns it. */
 function row(ordinal: number, fill: number, bytes = 16) {
@@ -88,7 +104,7 @@ describe('nextLookupPage', () => {
     expect(second.lastOrdinal).toBe(7);
   });
 
-  it('drops a non-canonical key locally and still advances the cursor past it', () => {
+  it('drops a key the encoder REFUSES and still advances the cursor past it', () => {
     // 15 bytes: `importKeyToWire` throws, and the server would answer 400 for
     // the WHOLE request on it — one bad row must not void a whole page.
     mockGetPendingImportKeyPage.mockReturnValue([row(5, 1, 15), row(6, 2)]);
@@ -113,18 +129,24 @@ describe('nextLookupPage', () => {
     expect(page.lastOrdinal).toBe(9);
   });
 
-  it('drops a key whose base64 is not the canonical 22+== shape', () => {
-    // A key that encodes, but to something the backend's `IMPORT_KEY_B64_RE`
-    // would refuse. The regex is re-checked rather than trusted from the
-    // encoder.
-    mockGetPendingImportKeyPage.mockReturnValue([row(1, 1, 18)]);
+  it('drops a key that ENCODES but not to the canonical 22+== shape', () => {
+    // 16 bytes, so the encoder does not throw — it answers base64url, which
+    // the backend's `IMPORT_KEY_B64_RE` refuses. The regex is re-checked
+    // rather than trusted from the encoder, and this is the arm that proves
+    // it: see the note on NON_CANONICAL_FILL.
+    mockGetPendingImportKeyPage.mockReturnValue([row(1, NON_CANONICAL_FILL), row(2, 3)]);
 
     const page = nextLookupPage(JOB, 0, 50);
 
-    // 18 bytes encode to 24 unpadded chars: it is not the `22+==` shape.
-    expect(Buffer.from(new Uint8Array(18)).toString('base64')).toHaveLength(24);
-    expect(page.rows).toEqual([]);
-    expect(page.scanned).toBe(1);
+    // The encoded form is well-formed base64url and 22 chars with no padding.
+    const encoded = Buffer.from(key(NON_CANONICAL_FILL)).toString('base64url');
+    expect(encoded).toHaveLength(22);
+    expect(encoded.endsWith('=')).toBe(false);
+    // Dropped locally; the good row beside it still goes out, and the cursor
+    // moves past both.
+    expect(page.rows.map((r) => r.itemId)).toEqual(['item-2']);
+    expect(page.scanned).toBe(2);
+    expect(page.lastOrdinal).toBe(2);
   });
 
   it('clamps the page size to LOOKUP_PAGE_MAX whatever the server advertised', () => {

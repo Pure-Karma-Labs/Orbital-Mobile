@@ -2130,13 +2130,17 @@ function otherSourceDetectedFor(r: ActiveRun, archive: ArchiveImportSession | nu
  *
  * `duplicate` is the server's verdict on a post this run submitted; `present`
  * is the pre-check's, reached before anything was uploaded. The member is told
- * one number, so any reader that reports "already in this orbit" sums these —
- * exported so a second copy of the pair cannot drift from this one.
+ * one number, so any reader that reports "already in this orbit" sums these.
+ *
+ * Module-local: {@link buildSummary} is the only reader, and `ImportSummary`
+ * carries the folded number outward. Export it only when a second reader
+ * actually exists — an exported constant with one caller invites a copy
+ * somewhere else rather than preventing one.
  *
  * It is deliberately NOT the set `importableTotal` or the progress counters
  * use: see the note on {@link importableTotal}.
  */
-export const ALREADY_IN_ORBIT_STATUSES: readonly ImportItemStatus[] = Object.freeze([
+const ALREADY_IN_ORBIT_STATUSES: readonly ImportItemStatus[] = Object.freeze([
   'duplicate',
   'present',
 ] as ImportItemStatus[]);
@@ -3097,11 +3101,18 @@ const NO_PRE_CHECK: ImportPreCheck = Object.freeze({ present: 0, bytes: 0, media
  *     production until the migration-050 deploy. The flag is the capability,
  *     and a guessed page size against a route that answers the flag-gate 404
  *     would spend a request per page to learn nothing.
- *  2. **Neither source has used a post.** Every import thread is charged to
+ *  2. **THIS source has used no post.** Every import thread is charged to
  *     `posts_used`, and the only thing that lowers it is `admin:delete-import`,
- *     which DELETES the threads it refunds. So `posts_used === 0` across both
- *     sources means this member has no import thread in this orbit and nothing
- *     can match. (That invariant is pinned by a comment in Orbital-Backend
+ *     which DELETES the threads it refunds. So this bucket reading zero means
+ *     the member has no thread here that could match, and the OTHER bucket is
+ *     irrelevant: the route does not filter by source, but
+ *     `import_key = hmac(K_import, source ‖ 0x00 ‖ sourceItemId)`
+ *     (`importCrypto.ts`'s `deriveImportKey`) frames the source INTO the key,
+ *     so a Facebook archive's keys can only ever collide with
+ *     Facebook-imported threads. A cross-source match is unreachable, not
+ *     merely unlikely.
+ *
+ *     (The charge invariant is pinned by a comment in Orbital-Backend
  *     `src/config/imports.js` as well; if a refund ever stops deleting the
  *     threads, this skip is the thing it breaks.)
  *  3. **The archive is refused even if EVERY post matched.** The most the
@@ -3142,12 +3153,11 @@ async function runImportPreCheck(args: {
     return NO_PRE_CHECK;
   }
 
-  const facebook = allowanceFor(args.response, 'facebook');
-  const instagram = allowanceFor(args.response, 'instagram');
-  if (facebook === null || instagram === null) return NO_PRE_CHECK;
-  if (facebook.postsUsed + instagram.postsUsed === 0) return NO_PRE_CHECK;
+  // THIS source's bucket only — the key's own framing makes the other one
+  // unable to hold a match (skip 2 above).
+  if (args.allowance.postsUsed === 0) return NO_PRE_CHECK;
 
-  // THIS job's source bucket, which is the one the archive is priced against.
+  // The same bucket, which is also the one the archive is priced against.
   const remainingPosts = Math.max(0, args.allowance.postsLimit - args.allowance.postsUsed);
   if (args.importable - args.allowance.postsUsed > remainingPosts) return NO_PRE_CHECK;
 
@@ -3337,9 +3347,14 @@ async function parseIntoJob(args: {
     token: args.token,
     signal: args.signal,
   });
-  // A wipe during the pre-check: no `setImportJobParsed` and no preflight for
-  // an account that is gone.
-  if (args.token !== liveToken) return null;
+  // A wipe OR a Cancel during the pre-check: no `setImportJobParsed` and no
+  // preflight. The `aborted` half is not redundant with the token: a
+  // parse-view Cancel goes through `cancelBeforeAnyRun`, which aborts the
+  // controller and leaves `liveToken` alone, and `runImportPreCheck`'s
+  // catch-all swallows the resulting `AbortError` by design — so a token-only
+  // gate here published `ready` plus a preflight for a parse the member had
+  // already cancelled.
+  if (args.token !== liveToken || args.signal.aborted) return null;
 
   const skips = countImportSkipsByReason(args.jobId);
   const preflight = buildPreflight({

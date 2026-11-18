@@ -32,6 +32,15 @@
  * again, and a post another device creates after this job parsed is still
  * re-uploaded. Every one of those is today's behaviour.
  *
+ * ## It runs BEFORE the member consents
+ *
+ * The keys go out at PARSE time, before the member taps Import — so the
+ * fingerprints of posts they may then decide never to import are sent anyway,
+ * and the server can infer this archive's importable post count and the fact
+ * that it was picked again. Nothing is reversible about that, so the runner's
+ * `postsUsed > 0` skip is what bounds WHEN it happens: a member who has never
+ * imported into this orbit sends nothing at all.
+ *
  * ## Handling classes
  *
  * `import_key` is derived from the v1 identity frame, which embeds the

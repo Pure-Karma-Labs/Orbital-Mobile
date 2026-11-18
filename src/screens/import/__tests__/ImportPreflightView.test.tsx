@@ -51,8 +51,20 @@ import type { ParseSummary, SkipReason } from '../../../services/metaImport/type
 // ---------------------------------------------------------------------------
 
 jest.mock('../../../services/metaImport/importRunner', () => ({
-  // The REAL predicate: a stub would let the Import button's `disabled`
-  // wiring pass while disagreeing with the runner about what can start.
+  // A deliberate COPY of `canStartFromPreflight`, not the real export and not
+  // a `jest.fn()` stub.
+  //
+  // It cannot be the real one: importing `importRunner` pulls in the store,
+  // `importCrypto` and the repository, and with them MMKV and the nitro
+  // modules — none of which exist in this environment, so the suite would not
+  // load at all. It must not be a stub either, because then the Import
+  // button's `disabled` wiring would pass against an answer nothing produces.
+  //
+  // THE DRIFT RISK IS REAL AND UNGUARDED: nothing joins this copy to the
+  // predicate it mirrors, so a fourth condition added to the runner's version
+  // (an `alreadyPresent` arm, say) leaves this suite asserting that Import is
+  // enabled in a state the runner refuses. `importRunner.test.ts` is where
+  // the real predicate is pinned; if you change it there, change it here.
   canStartFromPreflight: (preflight: {
     overAllowance: unknown;
     nothingToImport: boolean;

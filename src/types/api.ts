@@ -879,14 +879,18 @@ export type ImportSourceWire = 'facebook' | 'instagram';
  * (`allowanceWire`, Orbital-Backend `src/services/importService.js`). The
  * limits are LIFETIME caps, not per-session ones: `postsUsed` counts every
  * post this member has ever imported into this orbit FROM THAT SOURCE
- * (B#352), so a member who has used 900 of 1000 Facebook posts can never
- * import a 200-post Facebook archive — and still has their whole Instagram
- * allowance.
+ * (B#352), so a member whose Facebook `postsUsed` sits just under `postsLimit`
+ * (`IMPORT_POSTS_LIMIT`) can never import a Facebook archive that would carry
+ * them past it — and still has their whole Instagram allowance.
  */
 export interface ImportAllowance {
   postsUsed: number;
   bytesUsed: number;
-  /** 1000 today (`IMPORT_POSTS_LIMIT`). Read it, never hardcode it. */
+  /**
+   * 5000 after Backend B#337 (1000 on servers before it) —
+   * `IMPORT_POSTS_LIMIT`. Read it, never hardcode it: a client that assumed
+   * either number would be wrong against half the fleet during the rollout.
+   */
   postsLimit: number;
   /** 2 GiB today (`IMPORT_BYTES_LIMIT`). */
   bytesLimit: number;
@@ -910,11 +914,20 @@ export interface ImportLimits {
   /** `YYYY-MM-DD`; posts older than this are refused per item. */
   minDate: string;
   mediaContentClasses: MediaContentClass[];
+  /**
+   * Maximum `import_keys` per lookup request (`IMPORT_LOOKUP_MAX`, 1000).
+   *
+   * OPTIONAL, and that is the contract: it is also the CAPABILITY FLAG for
+   * `lookupImportKeys`. A server without the lookup route omits it, and a
+   * client that sees it absent must make no lookup call at all — not one
+   * capped at a guess. Read it, never hardcode it.
+   */
+  lookupMax?: number;
 }
 
 /** POST /api/groups/:groupId/imports request. All three fields are REQUIRED. */
 export interface StartImportRequest {
-  /** 1..1000. Outside the range → 400 `IMPORT_DECLARED_INVALID`. */
+  /** `1..posts_limit`. Outside the range → 400 `IMPORT_DECLARED_INVALID`. */
   declaredPosts: number;
   /** 0..2 GiB, a safe integer. */
   declaredBytes: number;
@@ -973,6 +986,34 @@ export interface GroupImportsResponse {
    */
   openImport: OpenImportSummary | null;
   limits: ImportLimits;
+}
+
+/**
+ * POST /api/groups/:groupId/imports/lookup request.
+ *
+ * 1..`limits.lookupMax` keys, each the canonical padded base64 of 16 bytes
+ * (`importKeyToWire`). The server fails the WHOLE request with a bare 400 on
+ * any entry that does not parse, so the caller drops a malformed key locally
+ * rather than sending it. Duplicates inside one request are removed
+ * server-side, silently.
+ */
+export interface ImportLookupRequest {
+  importKeys: string[];
+}
+
+/**
+ * POST /api/groups/:groupId/imports/lookup → 200.
+ *
+ * The MATCHING keys only — never the submitted set echoed back, and no thread
+ * id or `created_at` beside them. A key comes back iff this member authored a
+ * thread with it in THIS orbit, whichever source it was imported under.
+ *
+ * ADVISORY, not authoritative: the server's batch dedup remains the backstop,
+ * and a thread deleted after it was imported reads as absent (and is imported
+ * and charged again, exactly as today).
+ */
+export interface ImportLookupResponse {
+  existing: string[];
 }
 
 /** GET /api/imports/:importId → 200. Owner-only; any status. */

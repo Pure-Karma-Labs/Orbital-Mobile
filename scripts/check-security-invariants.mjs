@@ -6805,6 +6805,18 @@ const MI_BATCH = join(MI_DIR, 'importBatch.ts');
 const MI_MEDIA = join(MI_DIR, 'importMedia.ts');
 const MI_ERRORS = join(MI_DIR, 'importErrors.ts');
 
+/**
+ * The import API client, held to the SAME absolute bar as `importErrors.ts`.
+ *
+ * It sits OUTSIDE `MI_DIR`, so the directory scan above never sees it — and it
+ * is the one module that holds a request body of raw `import_key`s (the #930
+ * lookup), each an HMAC over the member's own post text. A debugging line here
+ * would name `data`, `groupId` or `response`, none of them forbidden
+ * identifiers, and print the whole key set to logcat or ship it as an
+ * unscrubbable `captureError` extra. Zero calls is the only form that binds.
+ */
+const MI_API = join(SRC, 'services', 'api', 'imports.ts');
+
 /** The four modules §4.15 delivers. A missing one is a violation. */
 const MI_REQUIRED_LOG_FILES = [MI_RUNNER, MI_BATCH, MI_MEDIA, MI_ERRORS];
 
@@ -7095,6 +7107,30 @@ for (const file of miScanned) {
         i + 1,
         MI_LOG_RULE,
         `a console/captureError/Sentry call in the PURE failure taxonomy — it classifies errors that carry archive paths and native diagnostic strings, so it must log nothing at all (${MI_LOG_ISSUE})`,
+      );
+    }
+  }
+}
+
+// `src/services/api/imports.ts` — same absolute bar, for the reason on
+// {@link MI_API}: it is outside the scanned directory and it holds the #930
+// lookup's `import_keys` request body.
+{
+  const miApiRaw = meRead(
+    MI_API,
+    MI_LOG_RULE,
+    'that the import API client logs nothing at all',
+    MI_LOG_ISSUE,
+  );
+  if (miApiRaw !== null) {
+    const lines = meStripComments(miApiRaw).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!ME_LOG_CALL_RE.test(lines[i])) continue;
+      report(
+        MI_API,
+        i + 1,
+        MI_LOG_RULE,
+        `a console/captureError/Sentry call in the import API client — its request bodies carry raw \`import_key\`s, each an HMAC over the member's own post text, and a line naming only \`data\` or \`response\` would print the whole key set (${MI_LOG_ISSUE})`,
       );
     }
   }

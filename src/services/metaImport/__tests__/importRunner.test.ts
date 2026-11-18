@@ -77,6 +77,7 @@ const mockGetGroupImports = jest.fn();
 const mockGetImportSession = jest.fn();
 const mockSubmitImportBatch = jest.fn();
 const mockCompleteImport = jest.fn();
+const mockLookupImportKeys = jest.fn();
 
 jest.mock('../../api/imports', () => ({
   startImport: (...a: unknown[]) => mockStartImport(...a),
@@ -84,6 +85,7 @@ jest.mock('../../api/imports', () => ({
   getImportSession: (...a: unknown[]) => mockGetImportSession(...a),
   submitImportBatch: (...a: unknown[]) => mockSubmitImportBatch(...a),
   completeImport: (...a: unknown[]) => mockCompleteImport(...a),
+  lookupImportKeys: (...a: unknown[]) => mockLookupImportKeys(...a),
 }));
 
 /**
@@ -352,8 +354,23 @@ function allowances(over: Partial<Record<ImportSource, ReturnType<typeof allowan
   return { facebook: allowance(), instagram: allowance(), ...over };
 }
 
-function groupImports(over: Record<string, unknown> = {}) {
-  return { allowances: allowances(), openImport: null, limits: LIMITS, ...over };
+/**
+ * The preflight GET response.
+ *
+ * `lookupMax` is spliced into `limits` rather than taken as a whole-`limits`
+ * override, because it is the #930 CAPABILITY FLAG: almost every case either
+ * wants it absent (today's servers, and the default here) or wants one number
+ * in it, and a whole-`limits` override would make every lookup test restate
+ * the other eight fields.
+ */
+function groupImports(over: Record<string, unknown> & { lookupMax?: number } = {}) {
+  const { lookupMax, ...rest } = over;
+  const base = {
+    allowances: allowances(),
+    openImport: null,
+    limits: lookupMax === undefined ? LIMITS : { ...LIMITS, lookupMax },
+  };
+  return { ...base, ...rest };
 }
 
 /** The open session the preflight reports, defaulting to OUR source. */
@@ -776,6 +793,11 @@ beforeEach(() => {
     createdPosts: 2,
     completedAt: '2012-08-26T00:00:00.000Z',
   });
+  // No matches by default. The pre-check (#930) is gated on the server
+  // advertising `lookup_max`, which `groupImports()` omits, so most of this
+  // suite never reaches the call at all — this is the safety net for the ones
+  // that do.
+  mockLookupImportKeys.mockResolvedValue({ existing: [] });
   mockUploadMedia.mockResolvedValue({ mediaId: 'media-0' });
   // Only the complete-only retry of a parked file reaches this, and only the
   // tests that park one care what it answers.
@@ -1240,8 +1262,8 @@ describe('the allowance gate', () => {
     const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
 
     const preflight = result.kind === 'preflight' ? result.preflight : null;
-    // `declared_posts` must be 1..1000, so a video-only export would otherwise
-    // send 0, be answered 400 IMPORT_DECLARED_INVALID, and surface as
+    // `declared_posts` must be `1..posts_limit`, so a video-only export would
+    // otherwise send 0, be answered 400 IMPORT_DECLARED_INVALID, and surface as
     // `job-terminal('CLIENT_BUG')` plus a Sentry event for an archive that is
     // simply empty of posts we can take.
     expect(preflight?.nothingToImport).toBe(true);
@@ -1328,6 +1350,521 @@ describe('the allowance gate', () => {
     expect(summary?.created).toBe(1);
     expect(summary?.notSubmitted).toBe(1);
     expect(jobRow().status).toBe('failed');
+  });
+});
+
+// ===========================================================================
+// Group: the already-in-this-orbit pre-check (#930)
+// ===========================================================================
+
+describe('the import pre-check', () => {
+  /** `importKeyToWire` is mocked with real base64, so this is the wire key. */
+  function wireKey(post: number): string {
+    return Buffer.from(new Uint8Array(16).fill(post + 1)).toString('base64');
+  }
+
+  /** Every key the runner asked about, across every page, flattened. */
+  function askedKeys(): string[] {
+    return mockLookupImportKeys.mock.calls.flatMap(
+      (call) => (call[1] as { importKeys: string[] }).importKeys,
+    );
+  }
+
+  /**
+   * An archive whose media entries are PRICED, so the byte estimate is real.
+   *
+   * `parseEmitting(n, {mediaPerPost: m})` names its media `entry-<post>-<m>`;
+   * `declaredByEntry` only prices an entry the listing did not skip, so the
+   * entries have to be declared here or every post contributes 0 bytes and the
+   * byte half of the test would pass vacuously.
+   */
+  function pricedArchive(posts: number, mediaPerPost: number, declaredSize = 4096): void {
+    mockOpenArchiveSession.mockImplementation(async () => {
+      const media = [];
+      for (let i = 0; i < posts; i++) {
+        for (let m = 0; m < mediaPerPost; m++) {
+          media.push({
+            entryId: `entry-${i}-${m}`,
+            path: `media/${i}-${m}.jpg`,
+            kind: 'image',
+            declaredSize,
+            skip: null,
+          });
+        }
+      }
+      return {
+        ...archiveSession(),
+        entries: [FB_ENTRY, ...media],
+      } as unknown as ArchiveImportSession;
+    });
+  }
+
+  /** `estimateImportBytes(4096)`: ceil(4096 * 1.5) + 64. */
+  const BYTES_PER_MEDIA = 6208;
+
+  /** The counts behind one job, for the summary identity. */
+  function statusCounts(): Record<string, number> {
+    const rows = harness.sqlite
+      .prepare('SELECT status, COUNT(*) AS n FROM import_items GROUP BY status')
+      .all() as { status: string; n: number }[];
+    const counts: Record<string, number> = {};
+    for (const row of rows) counts[row.status] = row.n;
+    return counts;
+  }
+
+  beforeEach(() => {
+    // The lookup only runs when SOMETHING could match, so every case here
+    // needs a non-zero `posts_used` (see the zero-used skip below).
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ lookupMax: 1000, allowances: allowances({ facebook: allowance(5) }) }),
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // 1. Everything in the archive is already here
+  // -------------------------------------------------------------------------
+
+  it('refuses an archive whose every post is already in this orbit, with no session', async () => {
+    pricedArchive(3, 1);
+    parseEmitting(3, { mediaPerPost: 1 });
+    mockLookupImportKeys.mockResolvedValue({
+      existing: [wireKey(0), wireKey(1), wireKey(2)],
+    });
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+    expect(preflight?.alreadyPresent).toBe(3);
+    expect(preflight?.alreadyPresentMedia).toBe(3);
+    expect(preflight?.importable).toBe(0);
+    expect(preflight?.estimatedBytes).toBe(0);
+    // The EXISTING refusal arm, reached for a new reason: nothing is left to
+    // declare, so `declared_posts` would have been 0 and the server would have
+    // answered 400 `IMPORT_DECLARED_INVALID`.
+    expect(preflight?.nothingToImport).toBe(true);
+    expect(preflight?.overAllowance).toBeNull();
+    // No session, no upload, no complete — the whole point of #930.
+    expect(mockStartImport).not.toHaveBeenCalled();
+    expect(mockUploadMedia).not.toHaveBeenCalled();
+    expect(mockCompleteImportUpload).not.toHaveBeenCalled();
+    expect(soleJob().status).toBe('cancelled');
+    expect(soleJob().declared_posts).toBeNull();
+    expect(mockReleaseArchiveParts).toHaveBeenCalledWith(['part-a']);
+    expect(itemRows().every((row) => row.status === 'present')).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // 2. Partial overlap
+  // -------------------------------------------------------------------------
+
+  it('nets a partial overlap out of the declared posts, bytes and media phase', async () => {
+    pricedArchive(4, 1);
+    parseEmitting(4, { mediaPerPost: 1 });
+    // K = 2 of N = 4, and deliberately not the first two: the netting is keyed
+    // on the moved rows' ordinals, not on a count.
+    mockLookupImportKeys.mockResolvedValue({ existing: [wireKey(0), wireKey(2)] });
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+    expect(preflight?.importable).toBe(2);
+    expect(preflight?.alreadyPresent).toBe(2);
+    expect(preflight?.alreadyPresentMedia).toBe(2);
+    // The two matched posts' media is subtracted EXACTLY: 4 * 6208 - 2 * 6208.
+    expect(preflight?.estimatedBytes).toBe(2 * BYTES_PER_MEDIA);
+    // Both numbers are persisted as declared, which is what the session will
+    // reserve.
+    expect(soleJob().declared_posts).toBe(2);
+    expect(soleJob().declared_bytes).toBe(2 * BYTES_PER_MEDIA);
+
+    await confirmAndRunImport();
+    await drain();
+
+    // Only the two posts that are NOT already here are uploaded...
+    expect(mockUploadMedia).toHaveBeenCalledTimes(2);
+    // ...and only their keys are submitted.
+    expect(askedKeys()).toHaveLength(4);
+    const submitted = mockSubmitImportBatch.mock.calls.flatMap(
+      (call) => (call[1] as { items: { importKey: string }[] }).items,
+    );
+    expect(submitted.map((item) => item.importKey).sort()).toEqual([wireKey(1), wireKey(3)].sort());
+
+    const state = importStore.getState();
+    // `total` is `declared_posts`, and the progress counters exclude `present`,
+    // so the run reaches 100% rather than stalling at half.
+    expect(state.total).toBe(2);
+    expect(state.created).toBe(2);
+    // The member is told ONE number for "already in this orbit": the server's
+    // `duplicate` verdicts plus the pre-check's `present` rows.
+    expect(state.summary?.created).toBe(2);
+    expect(state.summary?.duplicate).toBe(2);
+    expect(state.phase).toBe('done');
+    expect(soleJob().status).toBe('completed');
+  });
+
+  it('keeps the summary-line identity: the lines sum to importable + present', async () => {
+    pricedArchive(4, 1);
+    parseEmitting(4, { mediaPerPost: 1 });
+    mockLookupImportKeys.mockResolvedValue({ existing: [wireKey(0), wireKey(2)] });
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    await confirmAndRunImport();
+    await drain();
+
+    const summary = importStore.getState().summary;
+    const counts = statusCounts();
+    // `importableTotal`'s own opt-in sum, spelled out here so the identity is
+    // computed from SQL rather than restated as a constant.
+    const importableTotal =
+      (counts.pending ?? 0) +
+      (counts.uploading ?? 0) +
+      (counts.created ?? 0) +
+      (counts.duplicate ?? 0) +
+      (counts.failed ?? 0);
+    const lines =
+      (summary?.created ?? 0) +
+      (summary?.duplicate ?? 0) +
+      (summary?.failed ?? 0) +
+      (summary?.heldVideo ?? 0) +
+      (summary?.notSubmitted ?? 0);
+
+    // `present` is NOT in `importableTotal` — nothing can submit it — but it
+    // IS on the "already in this orbit" line, so the sum the member can do in
+    // their head needs that term.
+    expect(lines).toBe(importableTotal + (counts.present ?? 0));
+    expect(counts.present).toBe(2);
+    expect(lines).toBe(4);
+  });
+
+  // -------------------------------------------------------------------------
+  // 3. Every failure means "no further matches"
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['a 404 from a server without the route', new NotFoundError()],
+    ['a network failure', new NetworkError('offline')],
+    ['a 429', rateLimited(30_000)],
+    ['a 5xx', new ServerError(503, 'boom')],
+    // A 400 is in this list on purpose: a request shape this build gets wrong
+    // must degrade to today's behaviour, never stop the member's import.
+    ['a 400', new ValidationError(400, 'bad import_keys')],
+  ])("falls back to today's behaviour on %s", async (_label, error) => {
+    pricedArchive(2, 1);
+    parseEmitting(2, { mediaPerPost: 1 });
+    mockLookupImportKeys.mockRejectedValue(error);
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+    expect(preflight?.alreadyPresent).toBe(0);
+    expect(preflight?.importable).toBe(2);
+    expect(preflight?.estimatedBytes).toBe(2 * BYTES_PER_MEDIA);
+    // Not a pause, not a terminal, not a Sentry event, and not a failure
+    // reason: the pre-check is an OPTIMISATION, and the archive is runnable.
+    expect(soleJob().status).toBe('ready');
+    expect(soleJob().declared_posts).toBe(2);
+    expect(importStore.getState().phase).toBe('ready');
+    expect(mockCaptureError).not.toHaveBeenCalled();
+  });
+
+  it('keeps page 1 applied when page 2 fails', async () => {
+    pricedArchive(4, 1);
+    parseEmitting(4, { mediaPerPost: 1 });
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ lookupMax: 2, allowances: allowances({ facebook: allowance(5) }) }),
+    );
+    mockLookupImportKeys
+      .mockResolvedValueOnce({ existing: [wireKey(0), wireKey(1)] })
+      .mockRejectedValue(new NetworkError('offline'));
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+    // Pages already applied STAY applied: a post that is genuinely already in
+    // the orbit is still already in the orbit.
+    expect(preflight?.alreadyPresent).toBe(2);
+    expect(preflight?.importable).toBe(2);
+    expect(preflight?.estimatedBytes).toBe(2 * BYTES_PER_MEDIA);
+    const statuses = itemRows().map((row) => row.status);
+    expect(statuses).toEqual(['present', 'present', 'pending', 'pending']);
+    expect(soleJob().status).toBe('ready');
+  });
+
+  // -------------------------------------------------------------------------
+  // 4. The three skip conditions: no request at all
+  // -------------------------------------------------------------------------
+
+  it('asks nothing of a server that advertises no lookup_max', async () => {
+    // Production until the migration-050 deploy. The flag IS the capability:
+    // a guessed page size would spend a request per page to learn nothing.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ allowances: allowances({ facebook: allowance(5) }) }),
+    );
+    pricedArchive(2, 1);
+    parseEmitting(2, { mediaPerPost: 1 });
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    expect(mockLookupImportKeys).not.toHaveBeenCalled();
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+    expect(preflight?.alreadyPresent).toBe(0);
+    expect(preflight?.importable).toBe(2);
+    expect(soleJob().declared_posts).toBe(2);
+  });
+
+  it.each([0, -1, 2.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'asks nothing when lookup_max is %p',
+    async (lookupMax) => {
+      mockGetGroupImports.mockResolvedValue(
+        groupImports({ lookupMax, allowances: allowances({ facebook: allowance(5) }) }),
+      );
+      parseEmitting(2);
+
+      await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+      expect(mockLookupImportKeys).not.toHaveBeenCalled();
+    },
+  );
+
+  it('asks nothing when THIS source has used no post', async () => {
+    // Every import thread is charged to `posts_used`, and the only refund
+    // (`admin:delete-import`) DELETES the threads it refunds — so this bucket
+    // reading zero means the member has no thread here that could match.
+    mockGetGroupImports.mockResolvedValue(groupImports({ lookupMax: 1000 }));
+    parseEmitting(2);
+
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    expect(mockLookupImportKeys).not.toHaveBeenCalled();
+    expect(importStore.getState().preflight?.alreadyPresent).toBe(0);
+  });
+
+  it('asks nothing when only the OTHER source has used posts', async () => {
+    // The ROUTE does not filter by source — but the key does its own
+    // filtering: `import_key = hmac(K_import, source ‖ 0x00 ‖ sourceItemId)`
+    // (`importCrypto.ts`'s `deriveImportKey`), so a Facebook archive's keys
+    // can only ever collide with Facebook-imported threads. Asking about
+    // Instagram's 3 posts could not return a single match, and would send
+    // this archive's key fingerprints pre-consent for nothing.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ lookupMax: 1000, allowances: allowances({ instagram: allowance(3) }) }),
+    );
+    parseEmitting(2);
+
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    expect(mockLookupImportKeys).not.toHaveBeenCalled();
+    expect(soleJobSource()).toBe('facebook');
+  });
+
+  it("asks nothing when THIS source's bucket refuses the archive even if every post matched", async () => {
+    // Best case is `importable - postsUsed` (the pre-check cannot remove more
+    // than this bucket has used); 300 - 200 = 100, still over the 50 left.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({
+        lookupMax: 1000,
+        allowances: allowances({
+          facebook: { ...allowance(200), postsLimit: 250 },
+          instagram: { ...allowance(5), postsLimit: 1000 },
+        }),
+      }),
+    );
+    parseEmitting(300);
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    expect(mockLookupImportKeys).not.toHaveBeenCalled();
+    // The refusal the member would have seen anyway.
+    expect(result.kind === 'preflight' ? result.preflight.overAllowance : null).toBe('posts');
+  });
+
+  it("reads THIS source's bucket, not the other's, for that skip", async () => {
+    // The mirror image of the case above: the TIGHT bucket is now Instagram's,
+    // and this is a Facebook archive, so the skip must not fire.
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({
+        lookupMax: 1000,
+        allowances: allowances({
+          facebook: { ...allowance(5), postsLimit: 1000 },
+          instagram: { ...allowance(200), postsLimit: 250 },
+        }),
+      }),
+    );
+    parseEmitting(300);
+
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    expect(mockLookupImportKeys).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 5. Paging
+  // -------------------------------------------------------------------------
+
+  it('pages at the advertised lookup_max', async () => {
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ lookupMax: 2, allowances: allowances({ facebook: allowance(5) }) }),
+    );
+    parseEmitting(5);
+
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    expect(mockLookupImportKeys).toHaveBeenCalledTimes(3);
+    expect(
+      mockLookupImportKeys.mock.calls.map(
+        (call) => (call[1] as { importKeys: string[] }).importKeys.length,
+      ),
+    ).toEqual([2, 2, 1]);
+    // Every key exactly once, in parse order, and the orbit id from the path.
+    expect(askedKeys()).toEqual([0, 1, 2, 3, 4].map(wireKey));
+    expect(mockLookupImportKeys.mock.calls[0][0]).toBe(ORBIT);
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. Rule 0
+  // -------------------------------------------------------------------------
+
+  it('writes no row and shows no preflight when a wipe lands mid-lookup', async () => {
+    parseEmitting(3);
+    mockLookupImportKeys.mockImplementation(async () => {
+      resetImportRunnerState();
+      return { existing: [wireKey(0), wireKey(1), wireKey(2)] };
+    });
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    // Rule 0: the account that asked is gone, so nothing may be written for it
+    // and nothing may be said to the next one. The job ROW is deliberately not
+    // deleted here either — `deleteAllImportJobs` is the wipe's own job, and
+    // reaching for the DB after the token moved is exactly what rule 0 forbids.
+    expect(result.kind).toBe('cancelled');
+    expect(itemRows().every((row) => row.status === 'pending')).toBe(true);
+    expect(importStore.getState().preflight).toBeNull();
+    expect(soleJob().declared_posts).toBeNull();
+  });
+
+  it('publishes nothing when the member CANCELS mid-lookup', async () => {
+    parseEmitting(3);
+    mockLookupImportKeys.mockImplementation(async () => {
+      cancelImport();
+      return { existing: [wireKey(0)] };
+    });
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    // A Cancel aborts the parse controller and leaves `liveToken` ALONE, and
+    // the pre-check's catch-all swallows the resulting AbortError by design —
+    // so a token-only gate after it published `ready` plus a full preflight
+    // for a parse the member had already cancelled.
+    expect(result.kind).toBe('cancelled');
+    expect(
+      harness.sqlite.prepare("SELECT COUNT(*) AS n FROM import_jobs WHERE status = 'ready'").get(),
+    ).toEqual({ n: 0 });
+    expect(importStore.getState().phase).toBe('idle');
+    expect(importStore.getState().preflight).toBeNull();
+  });
+
+  it('aborts the request with the parse, and passes the signal through', async () => {
+    parseEmitting(2);
+
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    const signal = mockLookupImportKeys.mock.calls[0][2] as AbortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. The response is untrusted shape
+  // -------------------------------------------------------------------------
+
+  it('ignores unknown, non-string and non-array entries in the answer', async () => {
+    pricedArchive(2, 1);
+    parseEmitting(2, { mediaPerPost: 1 });
+    mockLookupImportKeys.mockResolvedValue({
+      existing: [
+        // A key this page never sent: the server does not get to name which
+        // local rows are mutated.
+        Buffer.from(new Uint8Array(16).fill(0x5a)).toString('base64'),
+        null,
+        42,
+        { importKey: wireKey(0) },
+        wireKey(1),
+      ],
+    });
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    const preflight = result.kind === 'preflight' ? result.preflight : null;
+    expect(preflight?.alreadyPresent).toBe(1);
+    expect(preflight?.importable).toBe(1);
+    expect(itemRows().map((row) => row.status)).toEqual(['pending', 'present']);
+  });
+
+  it('applies nothing for a non-array existing', async () => {
+    parseEmitting(2);
+    mockLookupImportKeys.mockResolvedValue({ existing: 'nope' });
+
+    const result = await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+
+    expect(result.kind === 'preflight' ? result.preflight.alreadyPresent : null).toBe(0);
+    expect(itemRows().every((row) => row.status === 'pending')).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // The rebuild paths
+  // -------------------------------------------------------------------------
+
+  it('recovers the already-present count from SQLite on a launch rebuild', async () => {
+    parseEmitting(3);
+    mockLookupImportKeys.mockResolvedValue({ existing: [wireKey(0)] });
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    resetImportRunnerForTesting();
+
+    await resumeImportAtLaunch();
+
+    const preflight = importStore.getState().preflight;
+    // The `present` ROWS are persisted, so the count survives a relaunch...
+    expect(preflight?.alreadyPresent).toBe(1);
+    // ...but the per-post media count was derived from the archive's central
+    // directory during the parse and is not, so the photo line falls back to
+    // gross.
+    expect(preflight?.alreadyPresentMedia).toBe(0);
+    // `declared_posts` was already netted before it was persisted: a rebuild
+    // must not net it a second time.
+    expect(preflight?.importable).toBe(2);
+  });
+
+  it('preserves both already-present numbers through closeOtherImport', async () => {
+    const OTHER_ID = '99999999-8888-4777-8666-555555555555';
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({
+        lookupMax: 1000,
+        allowances: allowances({ facebook: allowance(5) }),
+        openImport: openImport({ importId: OTHER_ID, source: 'instagram' }),
+      }),
+    );
+    pricedArchive(3, 2);
+    parseEmitting(3, { mediaPerPost: 2 });
+    mockLookupImportKeys.mockResolvedValue({ existing: [wireKey(0)] });
+    await pickAndStartParse({ conversationId: ORBIT, chooseSource: jest.fn() });
+    expect(importStore.getState().preflight?.alreadyPresent).toBe(1);
+    mockGetGroupImports.mockResolvedValue(
+      groupImports({ lookupMax: 1000, allowances: allowances({ facebook: allowance(5) }) }),
+    );
+
+    await expect(closeOtherImport()).resolves.toBe('closed');
+
+    const preflight = importStore.getState().preflight;
+    // Both are CAPTURED at call time, like the summary beside them: the
+    // pre-check's verdict is a parse-time fact about this archive, and closing
+    // someone else's session says nothing about it. Re-deriving them here
+    // would drop the "already in this orbit" line and inflate the photo count
+    // back to gross on a screen that is only being repriced.
+    expect(preflight?.alreadyPresent).toBe(1);
+    expect(preflight?.alreadyPresentMedia).toBe(2);
+    expect(preflight?.otherOpenImport).toBeNull();
+    expect(preflight?.importable).toBe(2);
   });
 });
 

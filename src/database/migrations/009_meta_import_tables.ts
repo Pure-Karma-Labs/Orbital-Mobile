@@ -102,6 +102,10 @@ CREATE TABLE import_items (
   job_id        TEXT    NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
   ordinal       INTEGER NOT NULL,
   import_key    BLOB,                           -- 16 bytes; NULL for the 3 pre-frame skips
+  -- ImportItemStatus: pending | uploading | created | duplicate | failed |
+  -- skipped | present. 'present' is the #930 pre-check verdict (the server's
+  -- lookup already holds this import_key for this member in this orbit), so
+  -- the row is never submitted and never charged. No CHECK, per the note above.
   status        TEXT    NOT NULL DEFAULT 'pending',
   skip_reason   TEXT,                           -- SkipReason; NULL unless skipped
   original_date INTEGER,                        -- epoch MS UTC

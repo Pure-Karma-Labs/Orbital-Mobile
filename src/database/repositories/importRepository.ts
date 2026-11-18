@@ -472,7 +472,9 @@ export interface PendingImportItem extends ImportItemRow {
  *
  * It matches `status = 'pending'` ONLY. Items parked in `uploading` or
  * `failed` are invisible here by design and come back through
- * {@link requeueImportItems}, which a resume runs first.
+ * {@link requeueImportItems}, which a resume runs first. `present` rows
+ * (#930) are invisible here PERMANENTLY and on purpose: nothing requeues
+ * them, because the post is already a thread in this orbit.
  */
 export function getPendingImportItems(jobId: string, limit: number): PendingImportItem[] {
   if (!isDatabaseInitialized()) return [];
@@ -502,6 +504,89 @@ export function getPendingImportItems(jobId: string, limit: number): PendingImpo
   }
 
   return items.map((item) => ({ ...item, media: byItem.get(item.id) ?? [] }));
+}
+
+/** One pending row of the #930 lookup page: the key, and where it sits. */
+export interface PendingImportKeyRow {
+  id: string;
+  /** Parse order within the job. The lookup's paging CURSOR. */
+  ordinal: number;
+  /** Exactly 16 bytes; `import_key IS NULL` rows are excluded by the query. */
+  import_key: Uint8Array;
+}
+
+/**
+ * One page of pending import keys, in parse order, strictly after `ordinal`.
+ *
+ * Keyset paging on `ordinal` rather than OFFSET, because the pre-check MOVES
+ * rows out of `pending` as it goes: an offset would skip as many rows as the
+ * previous page matched. The cursor is the ordinal of the last row READ, which
+ * is monotonic and unaffected by the status writes.
+ *
+ * Rows with a NULL `import_key` are excluded — there is nothing to look up —
+ * which is also what lets the row type be non-nullable. The exclusion cannot
+ * stall the paging: `LIMIT` is applied after the WHERE, so an empty page means
+ * no matching rows remain at all, not that the scan stopped on one.
+ *
+ * `idx_import_items_job_status` serves `job_id = ? AND status = ?`, with
+ * `ordinal` supplying the range and the ORDER BY.
+ */
+export function getPendingImportKeyPage(
+  jobId: string,
+  afterOrdinal: number,
+  limit: number,
+): PendingImportKeyRow[] {
+  if (!isDatabaseInitialized()) return [];
+
+  return queryMany<PendingImportKeyRow>(
+    `SELECT id, ordinal, import_key FROM import_items
+      WHERE job_id = ? AND status = 'pending' AND import_key IS NOT NULL AND ordinal > ?
+      ORDER BY ordinal ASC
+      LIMIT ?`,
+    [jobId, Math.floor(afterOrdinal), Math.max(0, Math.floor(limit))],
+  );
+}
+
+/**
+ * Mark items the server's pre-check already holds: `pending` → `present`.
+ *
+ * ONE transaction, and **guarded by `AND status = 'pending'`** per row, so the
+ * returned list is the ids that ACTUALLY moved. That matters beyond hygiene:
+ * the caller subtracts each moved row's exact byte contribution from the
+ * preflight estimate, and crediting a row that did not move would under-declare
+ * `declared_bytes` against a migration-046 `CHECK (>= 0)` column.
+ *
+ * `body` is NULLed in the same statement. The post will never be submitted
+ * from this job, so its PLAINTEXT-CLASS text has no further use — the same
+ * reasoning as the `created`/`duplicate` arm of {@link applyBatchResults}.
+ *
+ * Ids are bound one statement at a time, never interpolated. A short return
+ * means some ids were no longer pending (a concurrent requeue, a wipe between
+ * the page read and the response), which is not a failure: those rows stay in
+ * the queue and are submitted, where the server's batch dedup answers
+ * `duplicate`.
+ */
+export function markImportItemsPresent(jobId: string, itemIds: readonly string[]): string[] {
+  if (!isDatabaseInitialized() || itemIds.length === 0) return [];
+
+  const db = getDatabase();
+  const moved: string[] = [];
+  db.executeSync('BEGIN IMMEDIATE');
+  try {
+    for (const id of itemIds) {
+      const result = execute(
+        `UPDATE import_items SET status = 'present', body = NULL
+          WHERE id = ? AND job_id = ? AND status = 'pending'`,
+        [id, jobId],
+      );
+      if (result.rowsAffected > 0) moved.push(id);
+    }
+    db.executeSync('COMMIT');
+  } catch (error) {
+    db.executeSync('ROLLBACK');
+    throw error;
+  }
+  return moved;
 }
 
 /**
@@ -679,6 +764,7 @@ export function countImportItemsByStatus(jobId: string): Record<ImportItemStatus
     duplicate: 0,
     failed: 0,
     skipped: 0,
+    present: 0,
   };
   if (!isDatabaseInitialized()) return counts;
 

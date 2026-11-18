@@ -350,9 +350,21 @@ export interface DraftRow {
 export type ImportJobStatus =
   'parsing' | 'ready' | 'in_progress' | 'completed' | 'cancelled' | 'failed';
 
-/** `import_items.status` — the six states one parsed post moves through. */
+/**
+ * `import_items.status` — the seven states one parsed post moves through.
+ *
+ * `present` is the pre-check verdict (#930): the server's lookup said this
+ * `import_key` is already a thread this member authored in this orbit, so the
+ * post is excluded from `declared_posts`, `declared_bytes` and the media
+ * phase. It is deliberately NOT `duplicate` — `duplicate` is a SUBMITTED
+ * post's verdict and is counted in run progress, so reusing it would push
+ * progress past 100% and re-count the row in `importableTotal`.
+ *
+ * `import_items.status` has no CHECK constraint (migration 009), so adding a
+ * value needs no migration.
+ */
 export type ImportItemStatus =
-  'pending' | 'uploading' | 'created' | 'duplicate' | 'failed' | 'skipped';
+  'pending' | 'uploading' | 'created' | 'duplicate' | 'failed' | 'skipped' | 'present';
 
 /** `import_item_media.upload_state` — a request-saving cache, not a source of truth. */
 export type ImportMediaUploadState = 'pending' | 'uploaded';

@@ -1,12 +1,13 @@
 /**
- * Meta import API (#926) — the five JSON routes of B#315/B#317/B#318.
+ * Meta import API (#926) — the six JSON routes of B#315/B#317/B#318 plus the
+ * B#337 lookup.
  *
  * The two media routes live in `./media.ts` beside the ordinary chunked
  * upload they share a transport with.
  *
  * ## Flag gate
  *
- * All seven import routes are gated by `importsEnabled` BEFORE `authenticate`
+ * All eight import routes are gated by `importsEnabled` BEFORE `authenticate`
  * (Orbital-Backend `src/routes/imports.js`), so a server with `IMPORTS_ENABLED`
  * off answers 404 with a body byte-identical to an unknown route's.
  * `IMPORTS_ENABLED` is off in production today: a `NotFoundError` from any of
@@ -34,6 +35,8 @@ import type {
   GroupImportsResponse,
   ImportBatchRequest,
   ImportBatchResponse,
+  ImportLookupRequest,
+  ImportLookupResponse,
   ImportSessionResponse,
   StartImportRequest,
   StartImportResponse,
@@ -82,6 +85,38 @@ export function getGroupImports(groupId: string): Promise<GroupImportsResponse> 
   return request<GroupImportsResponse>({
     method: 'GET',
     path: `/api/groups/${encodeURIComponent(groupId)}/imports`,
+    retryOn429: false,
+  });
+}
+
+/**
+ * POST /api/groups/:groupId/imports/lookup — which of these keys are already
+ * in this orbit.
+ *
+ * Read-only and group-scoped: `groupId` comes from the path and the author
+ * from the token, never from the body. A caller can only learn about threads
+ * THEY authored in an orbit they still belong to.
+ *
+ * The body goes through the client's camelCase→snake_case transform, so the
+ * wire carries `import_keys`. The response carries the matching keys only.
+ *
+ * Gated on `limits.lookupMax`: a server without the route omits it, and the
+ * caller must then not call this at all — the route would answer the
+ * flag-gate 404 (indistinguishable from an unknown route).
+ *
+ * `signal` is threaded through because the only caller runs this at PARSE
+ * time, where the member's Cancel must abort the request in flight.
+ */
+export function lookupImportKeys(
+  groupId: string,
+  data: ImportLookupRequest,
+  signal?: AbortSignal,
+): Promise<ImportLookupResponse> {
+  return request<ImportLookupResponse>({
+    method: 'POST',
+    path: `/api/groups/${encodeURIComponent(groupId)}/imports/lookup`,
+    body: data,
+    signal,
     retryOn429: false,
   });
 }

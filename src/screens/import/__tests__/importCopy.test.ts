@@ -276,6 +276,8 @@ function makePreflight(over: Partial<ImportPreflight> = {}): ImportPreflight {
     remainingBytes: 1024 * 1024 * 1024,
     overAllowance: null,
     nothingToImport: false,
+    alreadyPresent: 0,
+    alreadyPresentMedia: 0,
     heldVideo: 0,
     skippedByReason: makeSkips(),
     ...over,
@@ -816,6 +818,10 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
     [412, 980],
   ],
   describeHeldVideoLine: [[1], [7]],
+  // #930: singular and plural, because the line carries a verb ("post is" /
+  // "posts are") that `+s` cannot produce.
+  describeAlreadyPresentLine: [[1], [12]],
+  describeAllPresentLine: [[1], [300]],
   // The source rides on the PREFLIGHT now (#996) — there is no `source`
   // argument, and no `?? 'facebook'` fallback at the call site to go with it.
   describePreflightLines: SOURCES.flatMap((source) => [
@@ -829,6 +835,40 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
         contentRetentionDays: 30,
         heldVideo: 5,
         remainingPosts: 13,
+      }),
+      NOW,
+    ],
+    // #930, a real arm rather than a zeroed field: some posts matched, so the
+    // counts are net and the already-present line is line 2.
+    [
+      makePreflight({
+        source,
+        summary: makeParseSummary({ importable: 20, importableMedia: 30 }),
+        importable: 8,
+        alreadyPresent: 12,
+        alreadyPresentMedia: 18,
+      }),
+      NOW,
+    ],
+    // Every photo of the export belongs to a post that is already here: the
+    // net count is 0, so the first line falls to the no-photos wording.
+    [
+      makePreflight({
+        source,
+        summary: makeParseSummary({ importable: 20, importableMedia: 30 }),
+        importable: 8,
+        alreadyPresent: 12,
+        alreadyPresentMedia: 30,
+      }),
+      NOW,
+    ],
+    // Singular, which is the arm "+s" would get wrong.
+    [
+      makePreflight({
+        source,
+        summary: makeParseSummary({ importableMedia: 4 }),
+        alreadyPresent: 1,
+        alreadyPresentMedia: 1,
       }),
       NOW,
     ],
@@ -846,9 +886,13 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
   describeFileIssueSummaryLine: [[1], [3]],
   describeImportButton: [[1], [120]],
   // Both sources: the refusal names the platform whose bucket is used up.
+  // Both ARMS × both values of #930's `alreadyPresent`, because the adjective
+  // "new " is interpolated into each template.
   describeRefusal: SOURCES.flatMap((source) => [
     [makePreflight({ source, overAllowance: 'posts' })],
     [makePreflight({ source, overAllowance: 'bytes' })],
+    [makePreflight({ source, overAllowance: 'posts', alreadyPresent: 40 })],
+    [makePreflight({ source, overAllowance: 'bytes', alreadyPresent: 40 })],
   ]),
   // The other source's open import, from the preflight notice through to the
   // settled summary. Every one of them names the OTHER platform, so each is
@@ -887,6 +931,11 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
   totalUnmigrated: [[SAMPLE_COUNTS], [{ skipped: {}, failed: {}, notSent: 0 }]],
   describeSummaryLines: [
     [makeSummary(), null, NOW],
+    // #930: `duplicate` folds the pre-check's `present` in, so a run that
+    // created nothing opens on the duplicate line — which is why that line
+    // carries its own noun. Singular and plural.
+    [makeSummary({ created: 0, duplicate: 7 }), null, NOW],
+    [makeSummary({ created: 0, duplicate: 1 }), null, NOW],
     [
       makeSummary({
         created: 4,
@@ -952,17 +1001,47 @@ const CALL_FIXTURES: Readonly<Record<string, readonly CallArgs[]>> = {
   ],
   describeMoreFooter: [[0], [1], [250]],
   // Every transition the announcer can make, including the two that depend on
-  // where the run came FROM (paused → running vs anything → running).
+  // where the run came FROM (paused → running vs anything → running), and
+  // #930's two VERDICT kinds, which read the preflight (the 5th argument).
   describeImportAnnouncement: [
-    ...VIEW_KINDS.map((kind) => [view(kind), null, 300, makeSummary()]),
-    ...PAUSE_CAUSES.map((cause) => [view('paused', cause), 'running', 300, null]),
-    [view('running'), 'paused', 300, null],
-    [view('running'), 'stalled', 1, null],
-    [view('running'), 'preflight', 300, null],
-    [view('completed'), 'running', 300, makeSummary({ created: 4 })],
-    [view('cancelled'), 'running', 300, makeSummary({ cancelled: true })],
-    [view('failed'), 'running', 300, makeSummary({ errorCode: 'NETWORK' })],
-    [view('completed'), 'running', 300, null],
+    ...VIEW_KINDS.map((kind) => [view(kind), null, 300, makeSummary(), makePreflight()]),
+    ...PAUSE_CAUSES.map((cause) => [view('paused', cause), 'running', 300, null, null]),
+    [view('running'), 'paused', 300, null, null],
+    [view('running'), 'stalled', 1, null, null],
+    [view('running'), 'preflight', 300, null, null],
+    [view('completed'), 'running', 300, makeSummary({ created: 4 }), null],
+    [view('cancelled'), 'running', 300, makeSummary({ cancelled: true }), null],
+    [view('failed'), 'running', 300, makeSummary({ errorCode: 'NETWORK' }), null],
+    [view('completed'), 'running', 300, null, null],
+    // The all-present verdict and the empty-export one, over both sources
+    // (the refusal names the platform).
+    ...SOURCES.flatMap((source) => [
+      [
+        view('nothing'),
+        'parsing',
+        0,
+        null,
+        makePreflight({ source, importable: 0, nothingToImport: true, alreadyPresent: 300 }),
+      ],
+      [
+        view('nothing'),
+        'parsing',
+        0,
+        null,
+        makePreflight({ source, importable: 0, nothingToImport: true }),
+      ],
+      [view('refused'), 'parsing', 0, null, makePreflight({ source, overAllowance: 'posts' })],
+      [
+        view('refused'),
+        'parsing',
+        0,
+        null,
+        makePreflight({ source, overAllowance: 'bytes', alreadyPresent: 9 }),
+      ],
+    ]),
+    // The defensive arms: a verdict kind with no preflight in hand.
+    [view('nothing'), 'parsing', 0, null, null],
+    [view('refused'), 'parsing', 0, null, null],
   ],
   describeFileIssueRow: FILE_ISSUE_REASONS.map((reason) => [
     { sourceFile: 'your_posts_0.json', reason },
@@ -1376,6 +1455,215 @@ describe('#996 copy pins (§3)', () => {
         'Facebook photos into this orbit. Export a smaller date range or a lower media ' +
         'quality from Meta and try again.',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #930 — the import-key pre-check's copy
+//
+// Every count that reaches these lines is NET of the posts the server already
+// holds, so each assertion below has a zeroed NEGATIVE CONTROL beside it: the
+// point is not that the new wording exists, it is that it appears exactly when
+// `alreadyPresent > 0` and never otherwise.
+// ---------------------------------------------------------------------------
+
+describe('#930 copy pins — already in this orbit', () => {
+  /** Gross 20 posts / 30 photos, of which 12 posts and 18 photos are here. */
+  const PARTIAL = makePreflight({
+    summary: makeParseSummary({ importable: 20, importableMedia: 30 }),
+    importable: 8,
+    alreadyPresent: 12,
+    alreadyPresentMedia: 18,
+  });
+
+  it('pins the already-present line, singular and plural', () => {
+    expect(copy.describeAlreadyPresentLine(1)).toBe(
+      "1 post is already in this orbit and won't be imported again.",
+    );
+    expect(copy.describeAlreadyPresentLine(12)).toBe(
+      "12 posts are already in this orbit and won't be imported again.",
+    );
+  });
+
+  it('pins the all-present verdict and its count line', () => {
+    expect(copy.ALL_PRESENT_COPY).toBe(
+      'Every post Orbital can import from this export is already in this orbit.',
+    );
+    // It REPLACES the empty-export line rather than joining it, so the two
+    // must not be the same string.
+    expect(copy.ALL_PRESENT_COPY).not.toBe(copy.NOTHING_TO_IMPORT_COPY);
+    // "Every post Orbital can import", never "Everything": the held-video,
+    // skipped and other-source lines are rendered right beside it.
+    expect(copy.ALL_PRESENT_COPY).not.toContain('Everything');
+    expect(copy.describeAllPresentLine(1)).toBe('1 post from this export was imported before.');
+    expect(copy.describeAllPresentLine(300)).toBe(
+      '300 posts from this export were imported before.',
+    );
+  });
+
+  it('puts the already-present line second, under the count it explains', () => {
+    const lines = copy.describePreflightLines(PARTIAL, NOW);
+    // NET photos: 30 gross − 18 belonging to posts already here.
+    expect(lines[0]).toBe('8 posts ready to import with 12 photos');
+    expect(lines[1]).toBe(copy.describeAlreadyPresentLine(12));
+    // Not the gross count, which is what a non-net line would have shown.
+    expect(lines).not.toContain('8 posts ready to import with 30 photos');
+    expect(lines).not.toContain('20 posts ready to import with 30 photos');
+  });
+
+  it('singular when exactly one post matched', () => {
+    const lines = copy.describePreflightLines(
+      makePreflight({
+        summary: makeParseSummary({ importableMedia: 4 }),
+        alreadyPresent: 1,
+        alreadyPresentMedia: 1,
+      }),
+      NOW,
+    );
+    expect(lines[0]).toBe('12 posts ready to import with 3 photos');
+    expect(lines[1]).toBe("1 post is already in this orbit and won't be imported again.");
+  });
+
+  it('falls to the no-photos wording when every photo belongs to a present post', () => {
+    const lines = copy.describePreflightLines(
+      { ...PARTIAL, alreadyPresentMedia: 30 },
+      // The `> 0` guard reads the NET value, so 30 − 30 = 0 photos.
+      NOW,
+    );
+    expect(lines[0]).toBe('8 posts ready to import');
+    expect(lines[1]).toBe(copy.describeAlreadyPresentLine(12));
+    expect(lines.some((line) => line.includes('photo'))).toBe(true);
+    // The only "photo" left is the allowance line and the re-download note,
+    // never a count of photos to import.
+    expect(lines).not.toContain('8 posts ready to import with 0 photos');
+  });
+
+  it('says nothing about it when the pre-check found nothing (the control)', () => {
+    const lines = copy.describePreflightLines(
+      makePreflight({ summary: makeParseSummary({ importable: 20, importableMedia: 30 }) }),
+      NOW,
+    );
+    expect(lines[0]).toBe('12 posts ready to import with 30 photos');
+    expect(lines.some((line) => line.includes('already in this orbit'))).toBe(false);
+  });
+
+  it('calls the refused counts NEW, in both arms and for both sources', () => {
+    expect(
+      copy.describeRefusal(
+        makePreflight({
+          source: 'instagram',
+          overAllowance: 'posts',
+          remainingPosts: 3,
+          alreadyPresent: 40,
+        }),
+      ),
+    ).toBe(
+      'This archive has 12 new Instagram posts but you can import 3 more Instagram ' +
+        'posts into this orbit. Export a smaller date range from Meta and try again.',
+    );
+    expect(
+      copy.describeRefusal(
+        makePreflight({
+          source: 'facebook',
+          overAllowance: 'posts',
+          remainingPosts: 3,
+          alreadyPresent: 40,
+        }),
+      ),
+    ).toContain('This archive has 12 new Facebook posts but you can import 3 more Facebook posts');
+    expect(
+      copy.describeRefusal(
+        makePreflight({
+          source: 'facebook',
+          overAllowance: 'bytes',
+          remainingBytes: 1024 * 1024,
+          alreadyPresent: 40,
+        }),
+      ),
+    ).toBe(
+      "This archive's new Facebook photos come to about 42 MB but you can import 1 MB " +
+        'more Facebook photos into this orbit. Export a smaller date range or a lower ' +
+        'media quality from Meta and try again.',
+    );
+    expect(
+      copy.describeRefusal(
+        makePreflight({
+          source: 'instagram',
+          overAllowance: 'bytes',
+          remainingBytes: 1024 * 1024,
+          alreadyPresent: 40,
+        }),
+      ),
+    ).toContain("This archive's new Instagram photos come to about 42 MB");
+  });
+
+  it('leaves the refusals unchanged when the pre-check found nothing (the control)', () => {
+    for (const source of SOURCES) {
+      for (const arm of ['posts', 'bytes'] as const) {
+        const line = copy.describeRefusal(makePreflight({ source, overAllowance: arm }));
+        expect(line).not.toContain('new ');
+        // And the only difference is that adjective.
+        expect(
+          copy
+            .describeRefusal(makePreflight({ source, overAllowance: arm, alreadyPresent: 1 }))
+            .replace('new ', ''),
+        ).toBe(line);
+      }
+    }
+  });
+
+  it('gives the summary duplicate line its own noun, so created === 0 reads', () => {
+    expect(describeSummaryLines(makeSummary({ created: 0, duplicate: 7 }), null, NOW)).toEqual([
+      '7 posts were already in this orbit',
+    ]);
+    expect(describeSummaryLines(makeSummary({ created: 0, duplicate: 1 }), null, NOW)).toEqual([
+      '1 post was already in this orbit',
+    ]);
+    // The bare-number form it replaced, which read as "7 what?" with no
+    // "posts imported" line above it.
+    expect(
+      describeSummaryLines(makeSummary({ created: 0, duplicate: 7 }), null, NOW),
+    ).not.toContain('7 were already in this orbit');
+    // It still sits UNDER the created line when there is one.
+    const both = describeSummaryLines(makeSummary({ created: 4, duplicate: 2 }), null, NOW);
+    expect(both[0]).toBe('4 posts imported');
+    expect(both[1]).toBe('2 posts were already in this orbit');
+  });
+
+  it('announces the two verdicts, distinctly, instead of staying silent', () => {
+    const allPresent = makePreflight({
+      importable: 0,
+      nothingToImport: true,
+      alreadyPresent: 300,
+    });
+    const empty = makePreflight({ importable: 0, nothingToImport: true });
+    const refused = makePreflight({ overAllowance: 'posts', alreadyPresent: 9 });
+
+    expect(copy.describeImportAnnouncement(view('nothing'), 'parsing', 0, null, allPresent)).toBe(
+      copy.ALL_PRESENT_COPY,
+    );
+    expect(copy.describeImportAnnouncement(view('nothing'), 'parsing', 0, null, empty)).toBe(
+      copy.NOTHING_TO_IMPORT_COPY,
+    );
+    expect(copy.describeImportAnnouncement(view('refused'), 'parsing', 0, null, refused)).toBe(
+      copy.describeRefusal(refused),
+    );
+    // With no preflight in hand there are no numbers to announce, so silence
+    // is still the answer — that arm is defensive, not reachable.
+    expect(copy.describeImportAnnouncement(view('refused'), 'parsing', 0, null, null)).toBeNull();
+    // `nothing` with no preflight still has a verdict worth saying.
+    expect(copy.describeImportAnnouncement(view('nothing'), 'parsing', 0, null, null)).toBe(
+      copy.NOTHING_TO_IMPORT_COPY,
+    );
+  });
+
+  it('keeps the two dead ends out of the count-free strip', () => {
+    // Deliberate: see the STRIP_LINE table's note. The announcement above is
+    // what closes the screen-reader gap, because it can carry the counts.
+    expect(copy.describeStripLine(view('nothing'))).toBeNull();
+    expect(copy.describeStripLine(view('refused'))).toBeNull();
+    // The control: the table is not null everywhere.
+    expect(copy.describeStripLine(view('preflight'))).toBe('Import ready to review');
   });
 });
 

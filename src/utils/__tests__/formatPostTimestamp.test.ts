@@ -31,6 +31,8 @@ import {
   formatDateWithYear,
   formatDateWithYearA11y,
   formatDayLabel,
+  formatImportDate,
+  formatImportDateA11y,
   formatPostTimestamp,
   formatPostTimestampA11y,
   formatShortTime,
@@ -476,6 +478,186 @@ describe('the zone parameter is additive', () => {
     expect(formatDateWithYear(UTC_MIDNIGHT_EDGE)).toBe(
       formatDateWithYear(UTC_MIDNIGHT_EDGE, 'local'),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #927 §8: the imported-thread date, and the zone it is read in.
+//
+// SIMULATED ZONES — read the suite header first. `process.env.TZ` does not
+// reach V8's cached zone in this Jest setup, so a zone cannot be pinned by
+// environment here. The two cases this rule exists for are both ZONE cases
+// (a device behind UTC, and one far enough ahead that the day header and the
+// row disagree), so they are driven by replacing Date's LOCAL getters with
+// UTC getters on a shifted instant — the same arithmetic a real zone with a
+// fixed offset performs, applied to the real formatter. `getTime()` and the
+// UTC getters are untouched, so the 'utc' branch is never simulated: it is
+// always the shipped one.
+// ---------------------------------------------------------------------------
+
+/** Local-calendar getters, which are the ones a device zone decides. */
+const LOCAL_GETTERS = [
+  'getFullYear',
+  'getMonth',
+  'getDate',
+  'getDay',
+  'getHours',
+  'getMinutes',
+  'getSeconds',
+  'getMilliseconds',
+] as const;
+
+/**
+ * Run `body()` with the device's local calendar simulated at a fixed offset
+ * AHEAD of UTC (negative for a zone behind it). Restores Date in a finally,
+ * so a failing expectation cannot leak the patch into the next test.
+ */
+function withDeviceZone(offsetMinutes: number, body: () => void): void {
+  const proto = Date.prototype as unknown as Record<string, unknown>;
+  const saved: Record<string, unknown> = {};
+
+  const shifted = function (self: Date): Date {
+    return new Date(self.getTime() + offsetMinutes * 60_000);
+  };
+
+  for (const name of LOCAL_GETTERS) {
+    saved[name] = proto[name];
+    const utcName = name.replace('get', 'getUTC') as 'getUTCFullYear';
+    proto[name] = function (this: Date): number {
+      return shifted(this)[utcName]();
+    };
+  }
+  saved.getTimezoneOffset = proto.getTimezoneOffset;
+  proto.getTimezoneOffset = function (): number {
+    return -offsetMinutes;
+  };
+
+  try {
+    body();
+  } finally {
+    for (const name of LOCAL_GETTERS) proto[name] = saved[name];
+    proto.getTimezoneOffset = saved.getTimezoneOffset;
+  }
+}
+
+/** UTC-5, a device BEHIND UTC (US Eastern in winter). */
+const ZONE_BEHIND = -300;
+/** UTC+13, far enough ahead to show the accepted day-header offset. */
+const ZONE_AHEAD = 780;
+
+/** 2014-06-01T12:00:00.000Z — the synthetic key for an imported post. */
+const IMPORT_NOON_UTC = Date.UTC(2014, 5, 1, 12, 0, 0, 0);
+/** 2026-11-18T03:30:00.000Z — a same-day import clamped to its insert instant. */
+const IMPORT_CLAMPED = Date.UTC(2026, 10, 18, 3, 30, 0, 0);
+
+describe('withDeviceZone (the simulation this suite rests on)', () => {
+  it('moves the local calendar and leaves UTC alone', () => {
+    withDeviceZone(ZONE_AHEAD, () => {
+      const d = new Date(IMPORT_NOON_UTC);
+      expect(d.getUTCDate()).toBe(1);
+      expect(d.getDate()).toBe(2); // 01:00 on June 2 at UTC+13
+      expect(d.getHours()).toBe(1);
+      expect(d.getTimezoneOffset()).toBe(-ZONE_AHEAD);
+    });
+    withDeviceZone(ZONE_BEHIND, () => {
+      const d = new Date(IMPORT_NOON_UTC);
+      expect(d.getDate()).toBe(1); // 07:00 on June 1 at UTC-5
+      expect(d.getHours()).toBe(7);
+    });
+  });
+
+  it('restores Date afterwards, even when the body throws', () => {
+    const before = new Date(IMPORT_NOON_UTC).getHours();
+    expect(() =>
+      withDeviceZone(ZONE_AHEAD, () => {
+        throw new Error('boom');
+      }),
+    ).toThrow('boom');
+    expect(new Date(IMPORT_NOON_UTC).getHours()).toBe(before);
+  });
+});
+
+describe('formatImportDate', () => {
+  it('reads the synthetic noon-UTC key in UTC, in every zone', () => {
+    for (const offset of [ZONE_BEHIND, 0, ZONE_AHEAD]) {
+      withDeviceZone(offset, () => {
+        expect(formatImportDate(IMPORT_NOON_UTC)).toBe('Jun 1, 2014');
+        expect(formatImportDateA11y(IMPORT_NOON_UTC)).toBe('June 1, 2014');
+      });
+    }
+  });
+
+  it('reads a clamped instant in the DEVICE zone, so the row matches its header', () => {
+    withDeviceZone(ZONE_BEHIND, () => {
+      // 03:30Z is still the previous evening at UTC-5.
+      expect(formatImportDate(IMPORT_CLAMPED)).toBe('Nov 17, 2026');
+      expect(localDayKey(IMPORT_CLAMPED)).toBe('2026-11-17');
+      expect(formatImportDateA11y(IMPORT_CLAMPED)).toBe('November 17, 2026');
+    });
+    withDeviceZone(ZONE_AHEAD, () => {
+      expect(formatImportDate(IMPORT_CLAMPED)).toBe('Nov 18, 2026');
+      expect(localDayKey(IMPORT_CLAMPED)).toBe('2026-11-18');
+    });
+  });
+
+  // The documented trade (plan §8). Pinned so it stays a decision rather than
+  // becoming a surprise: east of UTC+12 a past-dated import's row shows the
+  // day the member chose, while the header above it — grouped on the LOCAL
+  // day, like every other row — shows the next one.
+  it('shows the accepted one-day header offset at UTC+13, and none at UTC-5', () => {
+    withDeviceZone(ZONE_AHEAD, () => {
+      expect(formatImportDate(IMPORT_NOON_UTC)).toBe('Jun 1, 2014');
+      expect(localDayKey(IMPORT_NOON_UTC)).toBe('2014-06-02');
+      expect(formatDayLabel(IMPORT_NOON_UTC, Date.UTC(2026, 10, 18, 12, 0))).toBe('Jun 2, 2014');
+    });
+    withDeviceZone(ZONE_BEHIND, () => {
+      expect(formatImportDate(IMPORT_NOON_UTC)).toBe('Jun 1, 2014');
+      expect(localDayKey(IMPORT_NOON_UTC)).toBe('2014-06-01');
+      expect(formatDayLabel(IMPORT_NOON_UTC, Date.UTC(2026, 10, 18, 12, 0))).toBe('Jun 1, 2014');
+    });
+  });
+
+  it('keys on 12:00:00.000 UTC exactly, not on noon anywhere else', () => {
+    withDeviceZone(ZONE_BEHIND, () => {
+      // One millisecond off the key: a real instant, read locally.
+      expect(formatImportDate(IMPORT_NOON_UTC + 1)).toBe('Jun 1, 2014');
+      // 00:30Z — the local branch moves it back a day; the UTC branch would
+      // not, which is what makes this assertion about the branch.
+      expect(formatImportDate(Date.UTC(2014, 5, 1, 0, 30))).toBe('May 31, 2014');
+      // Noon LOCAL (17:00Z at UTC-5) is not the key either.
+      expect(formatImportDate(Date.UTC(2014, 5, 1, 17, 0))).toBe('Jun 1, 2014');
+    });
+  });
+
+  it('keys on the UTC day even before 1970, where the modulo goes negative', () => {
+    withDeviceZone(ZONE_AHEAD, () => {
+      expect(formatImportDate(Date.UTC(1969, 5, 1, 12, 0, 0, 0))).toBe('Jun 1, 1969');
+      expect(formatImportDateA11y(Date.UTC(1969, 5, 1, 12, 0, 0, 0))).toBe('June 1, 1969');
+    });
+  });
+
+  it('never renders a clock time', () => {
+    const dateOnly = /^[A-Z][a-z]{2} \d{1,2}, \d{4}$/;
+    for (const ts of [IMPORT_NOON_UTC, IMPORT_CLAMPED, Date.UTC(2026, 0, 1, 0, 0)]) {
+      expect(formatImportDate(ts)).toMatch(dateOnly);
+      expect(formatImportDate(ts)).not.toMatch(/AM|PM|:/);
+      expect(formatImportDateA11y(ts)).not.toMatch(/AM|PM|:/);
+    }
+  });
+
+  it('always shows the year, including a current-year import', () => {
+    const thisYear = new Date().getFullYear();
+    expect(formatImportDate(Date.UTC(thisYear, 5, 1, 12, 0))).toBe(`Jun 1, ${thisYear}`);
+  });
+
+  it('returns "" for an unrenderable timestamp without throwing', () => {
+    for (const bad of [NaN, Infinity, -Infinity, 1e20]) {
+      expect(formatImportDate(bad)).toBe('');
+      expect(formatImportDateA11y(bad)).toBe('');
+    }
+    expect(formatImportDate(undefined as unknown as number)).toBe('');
+    expect(() => formatImportDate(NaN)).not.toThrow();
+    expect(() => formatImportDateA11y(NaN)).not.toThrow();
   });
 });
 

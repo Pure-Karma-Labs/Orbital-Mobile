@@ -31,6 +31,8 @@
  *   formatCompactTimestamp(t)    // "3:04 PM" (today) / "Yesterday" / "Sep 12"
  *   formatDateWithYear(t)        // "Mar 4, 2019"
  *   formatDateWithYearA11y(t)    // "March 4, 2019"
+ *   formatImportDate(t)          // "Jun 1, 2014"
+ *   formatImportDateA11y(t)      // "June 1, 2014"
  *   localDayKey(t)               // "2026-09-12"
  */
 
@@ -349,6 +351,72 @@ export function formatDateWithYearA11y(timestamp: number, zone: DateZone = 'loca
   const parts = toParts(timestamp, zone);
   if (parts === null) return '';
   return `${MONTHS_LONG[parts.monthIndex]} ${parts.day}, ${parts.year}`;
+}
+
+const MS_PER_DAY = 86_400_000;
+/** Milliseconds from UTC midnight to the synthetic noon the server serves. */
+const NOON_UTC_MS = MS_PER_DAY / 2;
+
+/**
+ * Which calendar an IMPORTED thread's served `createdAt` belongs to (#927 §8).
+ *
+ * The backend stores an imported post's original date as a calendar DAY and
+ * serves it as that day at exactly 12:00:00.000 UTC — a synthetic sort key,
+ * not an instant anything happened at. Read locally, it would show the wrong
+ * day to anyone far enough east or west, so it is read in UTC.
+ *
+ * A post imported with TODAY's date is different: the server clamps it to the
+ * real insert instant, which is a genuine moment on the member's own clock and
+ * all but never lands on that exact key. Those are read locally, so the row
+ * agrees with the day header above it.
+ *
+ * The test is exact — 12:00:00.000 UTC to the millisecond. A clamped instant
+ * that happens to land on it (odds of one in 86.4 million) reads as the UTC
+ * day it already is, which is the same date it would have shown anyway in
+ * every zone from UTC-12 to UTC+12.
+ */
+function importDateZone(timestamp: number): DateZone {
+  if (!Number.isFinite(timestamp)) return 'local';
+  // Floored modulo: a pre-1970 timestamp is negative, and `%` keeps the sign.
+  const msIntoUtcDay = ((timestamp % MS_PER_DAY) + MS_PER_DAY) % MS_PER_DAY;
+  return msIntoUtcDay === NOON_UTC_MS ? 'utc' : 'local';
+}
+
+/**
+ * The date shown on an IMPORTED thread — "Jun 1, 2014". Always dated, never a
+ * clock time: the import carries a day, and the hour the server serves with it
+ * is a sort key rather than a time anything happened at. Showing "12:00 PM"
+ * beside an eleven-year-old post would be inventing a fact.
+ *
+ * The zone is picked per timestamp by {@link importDateZone}.
+ *
+ * Known and accepted (plan §8): in UTC+12…+14 a past-dated import's row reads
+ * one day EARLIER than the day header above it, because the header groups
+ * every row by the device-local day of `createdAt` while this one row is read
+ * in UTC. Pinned by a test. The alternative — grouping imports by a different
+ * calendar from their neighbours — would put two rows with the same visible
+ * date under two different headers.
+ *
+ * @param timestamp Epoch milliseconds, as served.
+ *
+ * @example
+ *   formatImportDate(Date.UTC(2014, 5, 1, 12, 0)) // "Jun 1, 2014" in any zone
+ *   formatImportDate(NaN)                         // ""
+ */
+export function formatImportDate(timestamp: number): string {
+  return formatDateWithYear(timestamp, importDateZone(timestamp));
+}
+
+/**
+ * Screen-reader form of {@link formatImportDate}: the month is spelled out.
+ *
+ * @param timestamp Epoch milliseconds, as served.
+ *
+ * @example
+ *   formatImportDateA11y(Date.UTC(2014, 5, 1, 12, 0)) // "June 1, 2014"
+ */
+export function formatImportDateA11y(timestamp: number): string {
+  return formatDateWithYearA11y(timestamp, importDateZone(timestamp));
 }
 
 /**

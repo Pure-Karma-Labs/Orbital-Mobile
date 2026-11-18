@@ -25,6 +25,7 @@ import { Avatar } from '../../components/Avatar';
 import { useContactAvatar } from '../../hooks/useContactAvatar';
 import { useDisplayName } from '../../hooks/useDisplayName';
 import { useIsMuted } from '../../hooks/useIsMuted';
+import { ImportedIndicator } from '../import/ImportedBadge';
 
 export type ThreadItemState = 'read' | 'active' | 'unread';
 
@@ -39,6 +40,21 @@ export interface ThreadItemProps {
   hasMedia?: boolean;
   state?: ThreadItemState;
   unreadCount?: number;
+  /**
+   * Mark the row as a Meta import (#927). A PRIMITIVE, like every other prop
+   * here: this component is memoized, and an object or a node would make
+   * `React.memo` useless for every visible row.
+   */
+  isImport?: boolean;
+  /**
+   * The spoken form of the import, folded into the row's accessibility label —
+   * "imported from Facebook, June 1, 2014". The glyph itself is hidden from
+   * screen readers, so this is the only thing that says it out loud.
+   *
+   * Built by the screen, not here: it carries the date in its long form, and
+   * the row is handed the short one.
+   */
+  importA11y?: string;
   onPress: (threadId: string) => void;
   /**
    * Long press opens the mute/unmute menu (#449). Must be a stable reference —
@@ -59,6 +75,8 @@ export const ThreadItem = React.memo(function ThreadItem({
   hasMedia = false,
   state = 'read',
   unreadCount = 0,
+  isImport = false,
+  importA11y,
   onPress,
   onLongPress,
 }: ThreadItemProps): React.JSX.Element {
@@ -142,6 +160,10 @@ export const ThreadItem = React.memo(function ThreadItem({
 
   const emojiSize = Math.round(theme.typography.fontSize.sm * 1.15);
 
+  // A gutter before the unread badge, so the two never touch when a row has
+  // both. Nothing else: the glyph takes its own size from the component.
+  const importedIndicatorStyle: ViewStyle = { marginRight: theme.spacing.xs };
+
   return (
     <TouchableOpacity
       style={containerStyle}
@@ -149,14 +171,24 @@ export const ThreadItem = React.memo(function ThreadItem({
       onLongPress={onLongPress ? handleLongPress : undefined}
       activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={`Thread: ${title}${isMuted ? ', muted' : ''}`}
+      accessibilityLabel={
+        `Thread: ${title}` +
+        (isImport && importA11y ? `, ${importA11y}` : '') +
+        (isMuted ? ', muted' : '')
+      }
       accessibilityHint={onLongPress ? 'Long press for notification options' : undefined}
       accessibilityActions={accessibilityActions}
       onAccessibilityAction={onLongPress ? handleAccessibilityAction : undefined}
     >
       <Avatar name={displayName} size={32} {...avatarProps} />
       <View style={mainStyle}>
-        <EmojiText style={titleStyle} numberOfLines={1}>
+        {/*
+          `linkify={false}` (#927): an imported post with no title shows its
+          BODY here, which is often nothing but a link. A tappable link inside
+          the row would sit on top of the row's own tap target, and a tap that
+          landed on it would leave the app instead of opening the thread.
+        */}
+        <EmojiText style={titleStyle} numberOfLines={1} linkify={false}>
           {title}
         </EmojiText>
         <Text style={metaStyle} numberOfLines={1}>
@@ -182,6 +214,15 @@ export const ThreadItem = React.memo(function ThreadItem({
           ) : null}
         </Text>
       </View>
+      {/*
+        The import glyph sits in the row's RIGHT SLOT, outside the meta line
+        (#927). Inside it, a long display name truncates the whole line and
+        takes the glyph with it — the one row where the badge matters most is
+        the one where it would disappear. Out here it is a sibling of the
+        flexible main column, so it survives any name length, and it is not
+        touchable: the row is the only tap target.
+      */}
+      {isImport && <ImportedIndicator style={importedIndicatorStyle} />}
       {unreadCount > 0 && <Badge count={unreadCount} />}
     </TouchableOpacity>
   );

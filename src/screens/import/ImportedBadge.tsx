@@ -32,6 +32,8 @@ const GLYPH_SCALE = 1.15;
 export interface ImportedIndicatorProps {
   /** Glyph size in points. Defaults to the caption's own 13pt. */
   size?: number;
+  /** Positioning only — the row owns where this sits. */
+  style?: ViewStyle;
 }
 
 /**
@@ -41,12 +43,13 @@ export interface ImportedIndicatorProps {
  * as nothing useful, and the row above it already says "imported from
  * Facebook" in words.
  */
-export function ImportedIndicator({ size }: ImportedIndicatorProps): React.JSX.Element {
+export function ImportedIndicator({ size, style }: ImportedIndicatorProps): React.JSX.Element {
   const theme = useTheme();
   const glyphSize = size ?? Math.round(theme.typography.fontSize.sm * GLYPH_SCALE);
 
   return (
     <View
+      style={style}
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
       testID="thread-imported-indicator"

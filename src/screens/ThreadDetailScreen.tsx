@@ -92,6 +92,7 @@ import { OrbitalSpinner } from '../components/OrbitalSpinner';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
+import { threadHeadline } from '../utils/threadHeadline';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -174,6 +175,19 @@ export function ThreadDetailScreen({
 
   // Subscribe to real-time updates for this thread's conversation
   useWebSocketSubscription(thread?.conversationId ?? null);
+
+  /**
+   * Is this thread's conversation an ORBIT this device knows about? (#927)
+   *
+   * It gates the derived top-bar headline below. A DM's "thread" is a message,
+   * and deriving a title from a message's body would put the message itself in
+   * the header above it; an unknown conversation says nothing either way, and
+   * guessing from a body is not an improvement on "Thread". A bare boolean, so
+   * the selector cannot re-render this screen on unrelated conversation edits.
+   */
+  const isOrbitThread = useAppStore(
+    (s) => thread !== undefined && s.conversations[thread.conversationId]?.type === 'group',
+  );
 
   // Per-thread mute (#449) — header bell. Muting only stops PUSH; the thread
   // keeps receiving replies over WebSocket/sync.
@@ -1139,6 +1153,8 @@ export function ThreadDetailScreen({
           groupId={thread.conversationId}
           currentUserId={userId}
           createdAt={thread.createdAt}
+          isImport={thread.isImport}
+          importSource={thread.importSource}
         />
       </View>
     );
@@ -1200,6 +1216,23 @@ export function ThreadDetailScreen({
     padding: theme.spacing.lg,
   };
 
+  /**
+   * The top bar, in order of preference (#927): the stored title; a headline
+   * derived from the thread itself, but only for an orbit thread; the title
+   * the navigation param carried in; and finally "Thread".
+   *
+   * The derived headline is NOT written back into the nav param — that param
+   * stays the stored title, so no decrypted body text enters navigation
+   * state. It is also the only place the derivation happens on this screen:
+   * the body below still renders no title line for an empty title, because
+   * the headline would be the first line of the body printed over itself.
+   */
+  const headerTitle =
+    thread?.title ||
+    (isOrbitThread && thread ? threadHeadline(thread) : null) ||
+    threadTitle ||
+    'Thread';
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -1208,7 +1241,7 @@ export function ThreadDetailScreen({
     <View style={containerStyle} testID="thread-detail-screen">
       <SafeAreaView edges={['top']} style={{ backgroundColor: theme.colors.background }}>
         <Header
-          title={thread?.title || threadTitle || 'Thread'}
+          title={headerTitle}
           onBack={() => navigation.goBack()}
           right={
             <TouchableOpacity

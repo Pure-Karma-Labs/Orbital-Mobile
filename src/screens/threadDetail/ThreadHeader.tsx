@@ -17,7 +17,15 @@ import { MediaLightbox } from '../../components/MediaLightbox';
 import { useMediaForThread } from '../../stores';
 import { useAuthorActions } from '../../hooks/useAuthorActions';
 import { useDisplayName } from '../../hooks/useDisplayName';
-import { formatPostTimestamp, formatPostTimestampA11y } from '../../utils/formatPostTimestamp';
+import {
+  formatImportDate,
+  formatImportDateA11y,
+  formatPostTimestamp,
+  formatPostTimestampA11y,
+} from '../../utils/formatPostTimestamp';
+import { ImportedCaption } from '../import/ImportedBadge';
+
+import type { ImportSource } from '../../services/metaImport/types';
 
 export interface ThreadHeaderProps {
   threadId: string;
@@ -28,6 +36,17 @@ export interface ThreadHeaderProps {
   groupId: string;
   currentUserId: string | null;
   createdAt: number;
+  /**
+   * This post came from a Meta import (#927). A primitive, like every other
+   * prop here — the component is memoized.
+   *
+   * It changes two things and nothing else: the timestamp becomes a DATE (an
+   * import's served time is a synthetic noon-UTC sort key, not a moment), and
+   * a caption appears under the author row.
+   */
+  isImport?: boolean;
+  /** The import's source, or null when the envelope was absent or unreadable. */
+  importSource?: ImportSource | null;
 }
 
 export const ThreadHeader = React.memo(function ThreadHeader({
@@ -39,6 +58,8 @@ export const ThreadHeader = React.memo(function ThreadHeader({
   groupId,
   currentUserId,
   createdAt,
+  isImport = false,
+  importSource = null,
 }: ThreadHeaderProps): React.JSX.Element {
   const theme = useTheme();
   const { width: windowWidth } = useWindowDimensions();
@@ -115,6 +136,13 @@ export const ThreadHeader = React.memo(function ThreadHeader({
     flexShrink: 0,
   };
 
+  // The author row's own `marginBottom` is xs; the caption takes that gap and
+  // keeps the same one under itself, so adding it moves nothing else down by
+  // more than its own line.
+  const importedCaptionStyle: ViewStyle = {
+    marginBottom: theme.spacing.xs,
+  };
+
   const titleStyle: TextStyle = {
     fontFamily: theme.typography.fontFamily.bodyBold,
     fontSize: theme.typography.fontSize.lg,
@@ -166,10 +194,22 @@ export const ThreadHeader = React.memo(function ThreadHeader({
           form: "3:04 PM" read out of context is ambiguous, "September 12 at
           3:04 PM" is not (#821).
         */}
-        <Text style={timestampStyle} accessibilityLabel={formatPostTimestampA11y(createdAt)}>
-          {formatPostTimestamp(createdAt)}
+        <Text
+          style={timestampStyle}
+          accessibilityLabel={
+            isImport ? formatImportDateA11y(createdAt) : formatPostTimestampA11y(createdAt)
+          }
+        >
+          {isImport ? formatImportDate(createdAt) : formatPostTimestamp(createdAt)}
         </Text>
       </View>
+      {/*
+        The source, as a visible, non-tappable line under the passive author
+        row (#927) — not an alert behind a tap, because there is nothing to
+        decide here and nothing to open. The author row above is unchanged:
+        this is its sibling, not a child of it.
+      */}
+      {isImport && <ImportedCaption source={importSource} style={importedCaptionStyle} />}
       {title != null && title.length > 0 && (
         <EmojiText style={titleStyle} selectable>{title}</EmojiText>
       )}

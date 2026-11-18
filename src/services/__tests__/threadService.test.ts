@@ -1436,7 +1436,12 @@ describe('#883 loadThread recency merge', () => {
   });
 
   it('falls back to the SQLite row when the store is empty (cold push open)', async () => {
-    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    // Seeded TWICE: on the cold-open path (no conversation row yet) the
+    // import carry-forward reads the same row before the recency merge does
+    // (#927), so a single `Once` would be consumed by the wrong caller.
+    mockDbGetThread
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
     // Field omitted: the legacy never-lower path, now against the disk row.
     mockGetThread.mockResolvedValue(makeThreadResponse());
 
@@ -1452,7 +1457,12 @@ describe('#883 loadThread recency merge', () => {
   it('lets an explicit null lower a value that exists only on disk (#897)', async () => {
     // A DB-only row can never carry a mid-request bump (the WS path upserts
     // the store before it persists), so the server value wins outright.
-    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    // Seeded TWICE: on the cold-open path (no conversation row yet) the
+    // import carry-forward reads the same row before the recency merge does
+    // (#927), so a single `Once` would be consumed by the wrong caller.
+    mockDbGetThread
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
     mockGetThread.mockResolvedValue(makeThreadResponse({ lastReplyAt: null }));
 
     const result = await loadThread('thread-1');
@@ -1558,7 +1568,12 @@ describe('#883 loadThreadsForGroup', () => {
   });
 
   it('falls back to the SQLite row for the batch merge when the field is omitted', async () => {
-    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    // Seeded TWICE: on the cold-open path (no conversation row yet) the
+    // import carry-forward reads the same row before the recency merge does
+    // (#927), so a single `Once` would be consumed by the wrong caller.
+    mockDbGetThread
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
     mockGetGroupThreads.mockResolvedValue({
       // Explicitly omitted: the fixture default is `null`, which is now an
       // authoritative "no counted reply" rather than "not sent" (#897).
@@ -1574,7 +1589,12 @@ describe('#883 loadThreadsForGroup', () => {
   });
 
   it('lets an explicit null lower a batch value that exists only on disk (#897)', async () => {
-    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    // Seeded TWICE: on the cold-open path (no conversation row yet) the
+    // import carry-forward reads the same row before the recency merge does
+    // (#927), so a single `Once` would be consumed by the wrong caller.
+    mockDbGetThread
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
     mockGetGroupThreads.mockResolvedValue({
       threads: [makeThreadListItem({ lastReplyAt: null })],
       totalCount: 1,
@@ -1717,7 +1737,12 @@ describe('#906 blocked-set generation guard', () => {
   it('falls back to the never-lower merge when the generation changed and there is no live row', async () => {
     // Nothing live to keep, so the disk row is protected by the legacy path
     // and the refresh that bumped the generation supplies the real values.
-    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    // Seeded TWICE: on the cold-open path (no conversation row yet) the
+    // import carry-forward reads the same row before the recency merge does
+    // (#927), so a single `Once` would be consumed by the wrong caller.
+    mockDbGetThread
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
+      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
     mockGetGroupThreads.mockImplementationOnce(async () => {
       setStoreBlockedGeneration(1);
       return {
@@ -2374,6 +2399,95 @@ describe('#927 import display mapping', () => {
 
       expect(thread.isImport).toBe(false);
       expect(thread.importSource).toBeNull();
+    });
+  });
+
+  // A cold open straight into thread detail (push notification, deep link)
+  // reaches loadThread before the conversation list has loaded. The orbit
+  // cannot be confirmed — but loadThread write-throughs to the store AND to
+  // SQLite, so answering "not an import" there would downgrade a correctly
+  // flagged cached row.
+  describe('unknown conversation carries the cached flag forward', () => {
+    beforeEach(() => {
+      setStoreConversations({});
+      // `clearAllMocks` does not reset implementations, so the DB default is
+      // restated here rather than leaked between these cases.
+      mockDbGetThread.mockReturnValue(null);
+      mockGetThread.mockResolvedValue(
+        makeThreadResponse({ isImport: true, encryptedImportMeta: META, importMetaIv: META_IV }),
+      );
+    });
+
+    it('keeps a cached import row imported, in the store upsert AND the DB write', async () => {
+      setStoreThreads({
+        'thread-1': makeStoredThread({ isImport: true, importSource: 'instagram' }),
+      });
+
+      const thread = await loadThread('thread-1');
+
+      expect(thread.isImport).toBe(true);
+      expect(thread.importSource).toBe('instagram');
+      expect((mockUpsertThread.mock.calls[0][0] as Thread).isImport).toBe(true);
+      expect((mockDbSaveThread.mock.calls[0][0] as Thread).isImport).toBe(true);
+      expect((mockDbSaveThread.mock.calls[0][0] as Thread).importSource).toBe('instagram');
+      // Withheld, not accepted: the payload's envelope is never opened here.
+      expect(mockDecryptContent).not.toHaveBeenCalledWith(META, META_IV, fakeGroupKey, 'group-1');
+    });
+
+    it('falls back to the SQLite row when the store has none', async () => {
+      mockDbGetThread.mockReturnValueOnce(
+        makeStoredThread({ isImport: true, importSource: 'facebook' }),
+      );
+
+      const thread = await loadThread('thread-1');
+
+      expect(thread.isImport).toBe(true);
+      expect(thread.importSource).toBe('facebook');
+    });
+
+    it('maps as a non-import when nothing is cached', async () => {
+      const thread = await loadThread('thread-1');
+
+      expect(thread.isImport).toBe(false);
+      expect(thread.importSource).toBeNull();
+    });
+
+    it('does not invent a source for a cached import that had none', async () => {
+      setStoreThreads({ 'thread-1': makeStoredThread({ isImport: true, importSource: null }) });
+
+      const thread = await loadThread('thread-1');
+
+      expect(thread.isImport).toBe(true);
+      expect(thread.importSource).toBeNull();
+    });
+
+    it('still refuses a DM, even over a cached true', async () => {
+      setStoreConversations({
+        'group-1': makeOrbitRow({ id: 'group-1', type: 'direct', peerUserId: 'user-2' }),
+      });
+      setStoreThreads({
+        'thread-1': makeStoredThread({ isImport: true, importSource: 'facebook' }),
+      });
+
+      const thread = await loadThread('thread-1');
+
+      expect(thread.isImport).toBe(false);
+      expect(thread.importSource).toBeNull();
+    });
+
+    it('carries the cached flag forward on the LIST path too', async () => {
+      setStoreThreads({
+        'thread-1': makeStoredThread({ isImport: true, importSource: 'facebook' }),
+      });
+
+      const thread = await loadOneListRow({
+        isImport: true,
+        encryptedImportMeta: META,
+        importMetaIv: META_IV,
+      });
+
+      expect(thread.isImport).toBe(true);
+      expect(thread.importSource).toBe('facebook');
     });
   });
 

@@ -861,16 +861,33 @@ interface ImportDisplay {
 const NOT_AN_IMPORT: ImportDisplay = { isImport: false, importSource: null, envelope: 'none' };
 
 /**
- * Is this conversation a KNOWN orbit? (#927)
+ * What the store knows about the conversation a fetched row belongs to (#927).
  *
- * Read from the store rather than inferred from the payload: `is_import` is a
- * server-supplied plaintext flag, and the only rows allowed to carry it are
- * rows in a group the client already knows is a group. A DM, or a conversation
- * the client has never loaded, can never be flagged — see
- * {@link resolveImportDisplay}.
+ * Three cases, not two. `'unknown'` is the one that is easy to get wrong: a
+ * cold open straight into thread detail — a push notification or a deep link —
+ * reaches `loadThread` before the conversation list has loaded, so the store
+ * holds no row and the orbit CANNOT be confirmed. That is not the same fact as
+ * "this is not an orbit", and treating it as one would write `isImport: false`
+ * over a correctly flagged cached row (`loadThread` write-throughs to both the
+ * store and SQLite).
  */
-function isKnownOrbit(groupId: string): boolean {
-  return getStoreActions().conversations[groupId]?.type === 'group';
+type ConversationGate = 'orbit' | 'not-orbit' | 'unknown';
+
+function conversationGate(groupId: string): ConversationGate {
+  const conversation = getStoreActions().conversations[groupId];
+  if (conversation === undefined) return 'unknown';
+  return conversation.type === 'group' ? 'orbit' : 'not-orbit';
+}
+
+/**
+ * The import display fields already known for a thread, from the store if it
+ * is there and from SQLite otherwise (#927).
+ *
+ * Only read on the `'unknown'` gate, so the DB hit happens on the cold-open
+ * path alone. `safeDbGetThread` never throws.
+ */
+function cachedImportDisplay(threadId: string): Pick<Thread, 'isImport' | 'importSource'> | null {
+  return getStoreActions().threads[threadId] ?? safeDbGetThread(threadId);
 }
 
 /**
@@ -886,6 +903,14 @@ function isKnownOrbit(groupId: string): boolean {
  * from suppressing that DM's unread dot (`getThreadState` keys read state on
  * `isImport`).
  *
+ * On the `'unknown'` gate the payload's flag is WITHHELD and `cached` — what a
+ * previous load already wrote for this thread — is carried forward unchanged.
+ * Withholding is not the same as denying: writing `false` there would downgrade
+ * a correct cached row on every cold open into an orbit whose conversation row
+ * has not loaded yet. The trust boundary is unaffected, because anything in
+ * `cached` passed through this same gate when it was written; the one thing
+ * that cannot happen is a NEW flag arriving unverified.
+ *
  * The envelope supplies the source label and NOTHING else. Its AAD binds the
  * orbit, not the thread, so a hostile server can move one imported thread's
  * envelope onto another in the same orbit; `meta.originalCreatedAt` is never
@@ -895,9 +920,18 @@ function resolveImportDisplay(
   row: Pick<ThreadListItem, 'isImport' | 'encryptedImportMeta' | 'importMetaIv'>,
   groupKey: Uint8Array,
   groupId: string,
-  isOrbit: boolean,
+  gate: ConversationGate,
+  cached: Pick<Thread, 'isImport' | 'importSource'> | null,
 ): ImportDisplay {
-  if (row.isImport !== true || !isOrbit) return NOT_AN_IMPORT;
+  if (gate === 'unknown') {
+    // Carry forward, never write. The envelope is not opened: its outcome is
+    // only ever a tamper COUNT, and this row's flag is not being decided here.
+    return cached?.isImport === true
+      ? { isImport: true, importSource: cached.importSource ?? null, envelope: 'none' }
+      : NOT_AN_IMPORT;
+  }
+
+  if (row.isImport !== true || gate !== 'orbit') return NOT_AN_IMPORT;
 
   const sealed = row.encryptedImportMeta;
   const iv = row.importMetaIv;
@@ -954,11 +988,13 @@ async function mapThreadResponse(
     });
   }
 
+  const detailGate = conversationGate(response.groupId);
   const importDisplay = resolveImportDisplay(
     response,
     groupKey,
     response.groupId,
-    isKnownOrbit(response.groupId),
+    detailGate,
+    detailGate === 'unknown' ? cachedImportDisplay(response.threadId) : null,
   );
 
   return {
@@ -1040,7 +1076,7 @@ async function mapReplyResponse(
 async function mapThreadListItem(
   item: ThreadListItem,
   groupKey: Uint8Array,
-  isOrbit: boolean,
+  gate: ConversationGate,
 ): Promise<{ thread: Thread; envelope: ImportEnvelopeOutcome }> {
   const { title, body } = await decryptThreadFields(
     item.encryptedTitle,
@@ -1051,7 +1087,13 @@ async function mapThreadListItem(
     item.groupId,
   );
 
-  const importDisplay = resolveImportDisplay(item, groupKey, item.groupId, isOrbit);
+  const importDisplay = resolveImportDisplay(
+    item,
+    groupKey,
+    item.groupId,
+    gate,
+    gate === 'unknown' ? cachedImportDisplay(item.threadId) : null,
+  );
 
   return {
     thread: {
@@ -1115,9 +1157,9 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
 
   // Resolved ONCE for the page: every row carries the same groupId, and the
   // gate is a property of the conversation, not of the row (#927).
-  const isOrbit = isKnownOrbit(groupId);
+  const gate = conversationGate(groupId);
   const mappedRows = await Promise.all(
-    response.threads.map((item) => mapThreadListItem(item, groupKey, isOrbit)),
+    response.threads.map((item) => mapThreadListItem(item, groupKey, gate)),
   );
   const mapped = mappedRows.map((row) => row.thread);
 

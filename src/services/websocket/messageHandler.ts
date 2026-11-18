@@ -342,6 +342,12 @@ async function handleNewThread(data: NewThreadPayload): Promise<void> {
       createdAt: new Date(data.createdAt).getTime(),
       updatedAt: new Date(data.createdAt).getTime(),
       syncStatus: 'synced',
+      // `new_thread` is only ever broadcast for a live post (#927): an import
+      // creates its threads silently and announces itself with
+      // `import_completed`, which carries no thread payload.
+      isImport: false,
+      importSource: null,
+      mediaCount: data.media?.length ?? 0,
     };
 
     // Write-through: persist decrypted thread to SQLCipher

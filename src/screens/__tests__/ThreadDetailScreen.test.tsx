@@ -156,6 +156,7 @@ import {
 } from '../../services/api/errors';
 import { toggleMute } from '../../services/notificationSettingsSync';
 import { UPLOAD_CANCELLED_MESSAGE } from '../../services/media/uploadCancellation';
+import { makeThread } from '../../testUtils/makeThread';
 import type { BatchUploadProgressEvent } from '../../services/mediaUploadService';
 
 const mockToggleMute = toggleMute as jest.Mock;
@@ -332,21 +333,21 @@ const mockRoute = {
 
 const now = Date.now();
 
-const fakeThread = {
+const fakeThread = makeThread({
   id: 'thread-1',
   conversationId: 'group-1',
   authorId: 'user-1',
   authorUsername: 'alice',
   title: 'Test Thread Title',
   body: 'This is the thread body content',
-  contentType: 'text' as const,
+  contentType: 'text',
   pinned: false,
   replyCount: 2,
   lastReplyAt: now,
   createdAt: now - 3600000, // 1 hour ago
   updatedAt: now - 3600000,
-  syncStatus: 'synced' as const,
-};
+  syncStatus: 'synced',
+});
 
 const fakeReplies = [
   {

@@ -767,6 +767,43 @@ export async function openImportMeta(
   groupId: string,
 ): Promise<ImportMetaV1 | null> {
   const groupKey = await getOrFetchGroupKey(groupId);
+  return openImportMetaWithKey(encryptedImportMeta, importMetaIv, groupKey, groupId);
+}
+
+/**
+ * {@link openImportMeta} with a group key the caller already holds, and no
+ * await of its own (#927).
+ *
+ * The thread-list path fetches the orbit's key once for the whole page, and it
+ * maps rows inside a `Promise.all`; a second `getOrFetchGroupKey` per row would
+ * be both pointless and a chance for the key to be invalidated mid-page. It is
+ * SYNCHRONOUS so the caller can treat opening an envelope as a pure step of
+ * mapping a row, and so the key it was handed cannot be zeroed in place across
+ * an await inside this function.
+ *
+ * Same error contract as {@link openImportMeta} minus the key-fetch errors,
+ * which cannot arise here.
+ *
+ * The wire caps are checked BEFORE any decode. The server bounds these columns
+ * too, but a hostile or buggy response is exactly the input this function
+ * exists to survive, and `decryptContent` would otherwise base64-decode an
+ * arbitrarily long string per row of a 50-row page. The same two constants the
+ * seal path asserts against, so the read path can never refuse an envelope this
+ * app could have written.
+ */
+export function openImportMetaWithKey(
+  encryptedImportMeta: string,
+  importMetaIv: string,
+  groupKey: Uint8Array,
+  groupId: string,
+): ImportMetaV1 | null {
+  // Base64 is ASCII, so character count IS the byte count.
+  if (encryptedImportMeta.length === 0 || encryptedImportMeta.length > MAX_IMPORT_META_B64) {
+    throw new ImportMetaAuthError();
+  }
+  if (importMetaIv.length === 0 || importMetaIv.length > MAX_IMPORT_META_IV_B64) {
+    throw new ImportMetaAuthError();
+  }
 
   let plaintext: string;
   try {

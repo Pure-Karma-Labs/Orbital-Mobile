@@ -8,10 +8,11 @@
  */
 
 import { getThreadState } from '../threadState';
+import { makeThread as makeThreadFixture } from '../../testUtils/makeThread';
 import type { Thread } from '../../types/store';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
+  return makeThreadFixture({
     id: 'thread-1',
     conversationId: 'group-1',
     authorId: 'user-1',
@@ -26,7 +27,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     updatedAt: 10_000,
     syncStatus: 'synced',
     ...overrides,
-  } as Thread;
+  });
 }
 
 describe('getThreadState — per-thread view watermark', () => {

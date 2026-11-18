@@ -132,6 +132,7 @@ import {
   encryptContent,
   getOrFetchGroupKey,
 } from '../crypto/contentCrypto';
+import { makeThread } from '../../testUtils/makeThread';
 import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, CreateThreadResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
 import type { Thread, Conversation, Contact } from '../../types/store';
 
@@ -1230,21 +1231,21 @@ describe('persistence write-through', () => {
 describe('hydration', () => {
   it('hydrateThreadsFromLocal calls getThreadsForConversation and populates store', () => {
     const fakeThreads = [
-      {
+      makeThread({
         id: 'thread-1',
         conversationId: 'conv-1',
         authorId: 'user-1',
         authorUsername: 'alice',
         title: 'Cached thread',
         body: null,
-        contentType: 'text' as const,
+        contentType: 'text',
         pinned: false,
         replyCount: 0,
         lastReplyAt: null,
         createdAt: 1700000000000,
         updatedAt: 1700000000000,
-        syncStatus: 'synced' as const,
-      },
+        syncStatus: 'synced',
+      }),
     ];
     mockGetThreadsForConversation.mockReturnValueOnce(fakeThreads);
 
@@ -1356,7 +1357,7 @@ describe('hydration', () => {
 // ---------------------------------------------------------------------------
 
 function makeStoredThread(overrides: Partial<Thread> = {}): Thread {
-  return {
+  return makeThread({
     id: 'thread-1',
     conversationId: 'group-1',
     authorId: 'user-1',
@@ -1371,7 +1372,7 @@ function makeStoredThread(overrides: Partial<Thread> = {}): Thread {
     updatedAt: 900,
     syncStatus: 'synced',
     ...overrides,
-  };
+  });
 }
 
 function setStoreThreads(threads: Record<string, Thread>): void {
@@ -2155,5 +2156,355 @@ describe('#908 blocked DM peer refuses the send', () => {
     ).resolves.toMatchObject({ id: 'server-thread-id' });
 
     expect(mockCreateThread).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #927 — import display fields (isImport / importSource / mediaCount)
+// ---------------------------------------------------------------------------
+
+describe('#927 import display mapping', () => {
+  const META = 'enc-import-meta-base64';
+  const META_IV = 'import-meta-iv-base64';
+
+  /** Merge a conversations map into the store mock's state. */
+  function setStoreConversations(conversations: Record<string, Conversation>): void {
+    const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+      useAppStore: { getState: jest.Mock };
+    };
+    const current = useAppStore.getState();
+    useAppStore.getState.mockReturnValue({ ...current, conversations });
+  }
+
+  function makeOrbitRow(overrides: Partial<Conversation> = {}): Conversation {
+    return {
+      id: 'group-1',
+      type: 'group',
+      name: 'Family',
+      memberCount: 3,
+      active: true,
+      lastMessageAt: null,
+      unreadCount: 0,
+      lastReadAt: null,
+      createdAt: 900,
+      updatedAt: 1000,
+      ...overrides,
+    };
+  }
+
+  /**
+   * Route the import-meta ciphertext to `plaintext` (a string), or make the
+   * decrypt THROW (an Error), while title and body keep decrypting normally.
+   */
+  function withEnvelope(plaintext: string | Error): void {
+    mockDecryptContent.mockImplementation((ciphertext: string) => {
+      if (ciphertext === META) {
+        if (plaintext instanceof Error) throw plaintext;
+        return plaintext;
+      }
+      if (ciphertext.includes('title')) return 'Decrypted Title';
+      if (ciphertext.includes('reply')) return 'Decrypted Reply Body';
+      return 'Decrypted Body';
+    });
+  }
+
+  const V1_FACEBOOK = JSON.stringify({
+    v: 1,
+    source: 'facebook',
+    // Deliberately a DIFFERENT instant from the served createdAt below: the
+    // envelope's date is never read, so nothing may ever show it.
+    originalCreatedAt: 1345982400000,
+  });
+
+  async function loadOneListRow(overrides: Partial<ThreadListItem>): Promise<Thread> {
+    mockGetGroupThreads.mockResolvedValue({
+      threads: [makeThreadListItem(overrides)],
+      totalCount: 1,
+      hasMore: false,
+    });
+    const threads = await loadThreadsForGroup('group-1');
+    return threads[0];
+  }
+
+  beforeEach(() => {
+    setStoreConversations({ 'group-1': makeOrbitRow() });
+    withEnvelope(V1_FACEBOOK);
+  });
+
+  describe('list rows (mapThreadListItem)', () => {
+    it('maps an absent is_import to a non-import row', async () => {
+      // `makeThreadListItem` omits the key entirely — a 1.7.7-era backend.
+      const thread = await loadOneListRow({});
+      expect(thread.isImport).toBe(false);
+      expect(thread.importSource).toBeNull();
+    });
+
+    it('maps is_import false to a non-import row, envelope or not', async () => {
+      const thread = await loadOneListRow({
+        isImport: false,
+        encryptedImportMeta: META,
+        importMetaIv: META_IV,
+      });
+      expect(thread.isImport).toBe(false);
+      expect(thread.importSource).toBeNull();
+      // The envelope is not even opened for a row the server did not flag.
+      expect(mockDecryptContent).not.toHaveBeenCalledWith(META, META_IV, fakeGroupKey, 'group-1');
+    });
+
+    it('never derives "imported" from importId (#927: the client does not read it)', async () => {
+      // `import_id` is served and deliberately unread. A row carrying one with
+      // is_import false is an ordinary row.
+      const raw = { ...makeThreadListItem({ isImport: false }), importId: 'import-123' };
+      mockGetGroupThreads.mockResolvedValue({ threads: [raw], totalCount: 1, hasMore: false });
+
+      const threads = await loadThreadsForGroup('group-1');
+
+      expect(threads[0].isImport).toBe(false);
+      expect(threads[0]).not.toHaveProperty('importId');
+    });
+
+    it('opens the envelope for a flagged row and carries only the source', async () => {
+      const thread = await loadOneListRow({
+        isImport: true,
+        encryptedImportMeta: META,
+        importMetaIv: META_IV,
+      });
+
+      expect(thread.isImport).toBe(true);
+      expect(thread.importSource).toBe('facebook');
+      expect(mockDecryptContent).toHaveBeenCalledWith(META, META_IV, fakeGroupKey, 'group-1');
+      // The SERVED createdAt, never the envelope's originalCreatedAt.
+      expect(thread.createdAt).toBe(new Date('2026-04-01T10:00:00Z').getTime());
+    });
+
+    it('carries the instagram source', async () => {
+      withEnvelope(JSON.stringify({ v: 1, source: 'instagram', originalCreatedAt: 1 }));
+      const thread = await loadOneListRow({
+        isImport: true,
+        encryptedImportMeta: META,
+        importMetaIv: META_IV,
+      });
+      expect(thread.importSource).toBe('instagram');
+    });
+
+    it.each([
+      ['a null envelope', null, null],
+      ['a null IV', META, null],
+      ['an empty envelope', '', META_IV],
+    ])('stays imported with an unknown source for %s', async (_label, sealed, iv) => {
+      const thread = await loadOneListRow({
+        isImport: true,
+        encryptedImportMeta: sealed,
+        importMetaIv: iv,
+      });
+      expect(thread.isImport).toBe(true);
+      expect(thread.importSource).toBeNull();
+    });
+
+    it('stays imported with an unknown source when the envelope is not v1', async () => {
+      withEnvelope(JSON.stringify({ v: 2, source: 'facebook', originalCreatedAt: 1 }));
+      const thread = await loadOneListRow({
+        isImport: true,
+        encryptedImportMeta: META,
+        importMetaIv: META_IV,
+      });
+      expect(thread.isImport).toBe(true);
+      expect(thread.importSource).toBeNull();
+    });
+
+    it('stays imported with an unknown source when the envelope fails to authenticate', async () => {
+      withEnvelope(new Error('auth tag mismatch'));
+      const thread = await loadOneListRow({
+        isImport: true,
+        encryptedImportMeta: META,
+        importMetaIv: META_IV,
+      });
+      expect(thread.isImport).toBe(true);
+      expect(thread.importSource).toBeNull();
+    });
+
+    it('carries the server media count', async () => {
+      const thread = await loadOneListRow({ mediaCount: 4 });
+      expect(thread.mediaCount).toBe(4);
+      expect(thread.contentType).toBe('media');
+    });
+  });
+
+  // The gate that keeps a server-supplied plaintext flag from suppressing a
+  // DM's unread dot (`getThreadState` keys read state on `isImport`).
+  describe('known-orbit gate', () => {
+    it('refuses to flag a row in a DM conversation', async () => {
+      setStoreConversations({
+        'group-1': makeOrbitRow({ id: 'group-1', type: 'direct', peerUserId: 'user-2' }),
+      });
+
+      const thread = await loadOneListRow({
+        isImport: true,
+        encryptedImportMeta: META,
+        importMetaIv: META_IV,
+      });
+
+      expect(thread.isImport).toBe(false);
+      expect(thread.importSource).toBeNull();
+      expect(mockDecryptContent).not.toHaveBeenCalledWith(META, META_IV, fakeGroupKey, 'group-1');
+    });
+
+    it('refuses to flag a row in a conversation the store does not know', async () => {
+      setStoreConversations({});
+
+      const thread = await loadOneListRow({
+        isImport: true,
+        encryptedImportMeta: META,
+        importMetaIv: META_IV,
+      });
+
+      expect(thread.isImport).toBe(false);
+      expect(thread.importSource).toBeNull();
+    });
+
+    it('refuses to flag a detail response for a DM', async () => {
+      setStoreConversations({
+        'group-1': makeOrbitRow({ id: 'group-1', type: 'direct', peerUserId: 'user-2' }),
+      });
+      mockGetThread.mockResolvedValue(
+        makeThreadResponse({ isImport: true, encryptedImportMeta: META, importMetaIv: META_IV }),
+      );
+
+      const thread = await loadThread('thread-1');
+
+      expect(thread.isImport).toBe(false);
+      expect(thread.importSource).toBeNull();
+    });
+  });
+
+  describe('detail responses (mapThreadResponse)', () => {
+    it('opens the envelope and keeps the served createdAt', async () => {
+      mockGetThread.mockResolvedValue(
+        makeThreadResponse({ isImport: true, encryptedImportMeta: META, importMetaIv: META_IV }),
+      );
+
+      const thread = await loadThread('thread-1');
+
+      expect(thread.isImport).toBe(true);
+      expect(thread.importSource).toBe('facebook');
+      expect(thread.createdAt).toBe(new Date('2026-04-01T10:00:00Z').getTime());
+    });
+
+    it('derives mediaCount from the media array', async () => {
+      mockGetThread.mockResolvedValue(makeThreadResponse());
+      expect((await loadThread('thread-1')).mediaCount).toBe(0);
+    });
+  });
+
+  describe('one bad envelope cannot fail the load', () => {
+    /** Three rows; only the middle one's envelope throws. */
+    function threeRowsWithOneBadEnvelope(): void {
+      mockDecryptContent.mockImplementation((ciphertext: string, iv: string) => {
+        if (ciphertext === META) {
+          if (iv === 'bad-iv') throw new Error('auth tag mismatch');
+          return V1_FACEBOOK;
+        }
+        if (ciphertext.includes('title')) return 'Decrypted Title';
+        return 'Decrypted Body';
+      });
+
+      mockGetGroupThreads.mockResolvedValue({
+        threads: [
+          makeThreadListItem({
+            threadId: 'thread-a',
+            isImport: true,
+            encryptedImportMeta: META,
+            importMetaIv: META_IV,
+          }),
+          makeThreadListItem({
+            threadId: 'thread-b',
+            isImport: true,
+            encryptedImportMeta: META,
+            importMetaIv: 'bad-iv',
+          }),
+          makeThreadListItem({
+            threadId: 'thread-c',
+            isImport: true,
+            encryptedImportMeta: META,
+            importMetaIv: META_IV,
+          }),
+        ],
+        totalCount: 3,
+        hasMore: false,
+      });
+    }
+
+    it('resolves with all three rows and loses only the bad row\'s source', async () => {
+      threeRowsWithOneBadEnvelope();
+
+      const threads = await loadThreadsForGroup('group-1');
+
+      expect(threads.map((t) => t.id)).toEqual(['thread-a', 'thread-b', 'thread-c']);
+      expect(threads.map((t) => t.importSource)).toEqual(['facebook', null, 'facebook']);
+      // Every row is still imported, and the page was still written through.
+      expect(threads.every((t) => t.isImport)).toBe(true);
+      expect(mockSaveThreadBatch).toHaveBeenCalledTimes(1);
+      expect(mockSetThreads).toHaveBeenCalledTimes(1);
+    });
+
+    it('warns ONCE per load, with a count and nothing else', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      threeRowsWithOneBadEnvelope();
+
+      await loadThreadsForGroup('group-1');
+
+      const importWarns = warn.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('import metadata'),
+      );
+      expect(importWarns).toHaveLength(1);
+      const [message, ...rest] = importWarns[0] as [string, ...unknown[]];
+      expect(rest).toEqual([]);
+      expect(message).toContain('1 row(s)');
+      // No ids, no ciphertext, no IV, no source.
+      expect(message).not.toContain('thread-b');
+      expect(message).not.toContain(META);
+      expect(message).not.toContain('bad-iv');
+      warn.mockRestore();
+    });
+
+    it('stays silent when every envelope opens', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await loadOneListRow({
+        isImport: true,
+        encryptedImportMeta: META,
+        importMetaIv: META_IV,
+      });
+
+      expect(
+        warn.mock.calls.filter(
+          (call) => typeof call[0] === 'string' && call[0].includes('import metadata'),
+        ),
+      ).toHaveLength(0);
+      warn.mockRestore();
+    });
+  });
+
+  describe('locally composed threads', () => {
+    it('marks the optimistic and the confirmed row as non-imports', async () => {
+      mockCreateThread.mockResolvedValue({
+        threadId: 'server-thread-id',
+        groupId: 'group-1',
+        createdAt: '2026-04-02T09:30:00Z',
+        media: [],
+      } as CreateThreadResponse);
+
+      const created = await createNewThread('group-1', 'Title', 'Body', {
+        authorId: 'user-1',
+        authorUsername: 'alice',
+      });
+
+      const optimistic = mockAddOptimisticThread.mock.calls[0][0] as Thread;
+      expect(optimistic.isImport).toBe(false);
+      expect(optimistic.importSource).toBeNull();
+      expect(created.isImport).toBe(false);
+      expect(created.importSource).toBeNull();
+      expect(created.mediaCount).toBe(0);
+    });
   });
 });

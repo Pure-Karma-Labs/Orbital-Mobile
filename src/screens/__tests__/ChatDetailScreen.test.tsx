@@ -9,6 +9,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ThemeProvider } from '../../theme';
 import { ChatDetailScreen } from '../ChatDetailScreen';
 import { formatDayLabel } from '../../utils/formatPostTimestamp';
+import { makeThread } from '../../testUtils/makeThread';
 import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -555,7 +556,7 @@ describe('ChatDetailScreen — focus lifecycle', () => {
 describe('ChatDetailScreen — block filtering', () => {
   const now = Date.now();
 
-  const threadByBlocked: Thread = {
+  const threadByBlocked: Thread = makeThread({
     id: 'thread-blocked',
     conversationId: 'dm-conv-1',
     authorId: 'u-blocked',
@@ -569,9 +570,9 @@ describe('ChatDetailScreen — block filtering', () => {
     createdAt: now,
     updatedAt: now,
     syncStatus: 'synced',
-  } as Thread;
+  });
 
-  const threadByOk: Thread = {
+  const threadByOk: Thread = makeThread({
     id: 'thread-ok',
     conversationId: 'dm-conv-1',
     authorId: 'u-ok',
@@ -585,7 +586,7 @@ describe('ChatDetailScreen — block filtering', () => {
     createdAt: now,
     updatedAt: now,
     syncStatus: 'synced',
-  } as Thread;
+  });
 
   const blockedThreadsState = {
     ...emptyThreadsState,

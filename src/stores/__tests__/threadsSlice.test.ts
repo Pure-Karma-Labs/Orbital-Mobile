@@ -5,6 +5,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { createThreadsSlice } from '../slices/threadsSlice';
+import { makeThread as makeThreadFixture } from '../../testUtils/makeThread';
 import type { AppState, Reply, Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -141,7 +142,7 @@ function makeStore() {
 // ---------------------------------------------------------------------------
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
+  return makeThreadFixture({
     id: 'thread-1',
     conversationId: 'conv-1',
     authorId: 'user-1',
@@ -156,7 +157,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     updatedAt: 1000,
     syncStatus: 'synced',
     ...overrides,
-  };
+  });
 }
 
 function makeReply(overrides: Partial<Reply> = {}): Reply {

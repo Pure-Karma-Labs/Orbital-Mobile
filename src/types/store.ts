@@ -14,6 +14,7 @@ import type {
   DraftContextType,
 } from './database';
 import type { NotificationPrefs, MuteTargetType } from './api';
+import type { ImportSource } from '../services/metaImport/types';
 import { VerifiedStatus } from './database';
 
 // ============================================================
@@ -97,6 +98,33 @@ export interface Thread {
   /** Epoch ms */
   updatedAt: number;
   syncStatus: SyncStatus;
+  /**
+   * Server-supplied plaintext flag (`ThreadResponse.isImport`, Backend #317):
+   * this thread came from a Meta archive import. Required, never optional — an
+   * absent flag on the wire maps to `false` here, and the WebSocket / optimistic
+   * builders set `false` outright.
+   *
+   * `threadService.resolveImportDisplay` additionally refuses to set it for any
+   * conversation that is not a known orbit, so a stray flag on a DM cannot
+   * suppress that DM's unread dot.
+   */
+  isImport: boolean;
+  /**
+   * The import's source, from the opened import-meta envelope. `null` when the
+   * thread is not an import, when the envelope is absent, or when it did not
+   * open. DISPLAY ONLY — the envelope's AAD binds the orbit, not the thread.
+   */
+  importSource: ImportSource | null;
+  /**
+   * Server media count for this thread. `null` = unknown (a row hydrated from a
+   * pre-010 SQLite cache).
+   *
+   * Includes reply media, is per-viewer (block-filtered), includes expired /
+   * tombstoned rows, and is written only at fetch time — so it can lag after a
+   * photo reply or a block until the next load. Used for the display-time
+   * headline only, never for ordering or state.
+   */
+  mediaCount: number | null;
 }
 
 export interface Reply {

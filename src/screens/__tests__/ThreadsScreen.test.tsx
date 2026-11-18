@@ -9,6 +9,7 @@ import { ThemeProvider } from '../../theme';
 import { ThreadsScreen } from '../ThreadsScreen';
 import { getThreadState } from '../../utils/threadState';
 import { formatDayLabel } from '../../utils/formatPostTimestamp';
+import { makeThread as makeThreadFixture } from '../../testUtils/makeThread';
 import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
@@ -643,21 +644,21 @@ describe('ThreadsScreen — activity ordering', () => {
   const DAY = 24 * 60 * 60 * 1000;
   const nowTs = Date.now();
 
-  const baseThread = {
+  const baseThread = makeThreadFixture({
     id: 'thread-base',
     conversationId: 'group-1',
     authorId: 'user-1',
     authorUsername: 'alice',
     title: 'Base thread',
     body: null,
-    contentType: 'text' as const,
+    contentType: 'text',
     pinned: false,
     replyCount: 0,
-    lastReplyAt: null as number | null,
+    lastReplyAt: null,
     createdAt: nowTs,
     updatedAt: nowTs,
-    syncStatus: 'synced' as const,
-  };
+    syncStatus: 'synced',
+  });
 
   function setThreads(threads: Record<string, Thread>, ids: string[]): void {
     const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
@@ -699,14 +700,14 @@ describe('ThreadsScreen — activity ordering', () => {
           createdAt: nowTs - 5 * DAY,
           lastReplyAt: nowTs,
           replyCount: 1,
-        } as Thread,
+        },
         'thread-new': {
           ...baseThread,
           id: 'thread-new',
           title: 'Newer quiet thread',
           createdAt: nowTs - 60_000,
           lastReplyAt: null,
-        } as Thread,
+        },
       },
       // Store order deliberately favours the wrong answer.
       ['thread-new', 'thread-old'],
@@ -736,14 +737,14 @@ describe('ThreadsScreen — activity ordering', () => {
           createdAt: nowTs,
           lastReplyAt: NaN,
           replyCount: 1,
-        } as Thread,
+        },
         'thread-older': {
           ...baseThread,
           id: 'thread-older',
           title: 'Older plain thread',
           createdAt: olderCreatedAt,
           lastReplyAt: null,
-        } as Thread,
+        },
       },
       // Store order deliberately favours the wrong answer.
       ['thread-older', 'thread-corrupt'],
@@ -785,7 +786,7 @@ describe('ThreadsScreen — activity ordering', () => {
           createdAt,
           lastReplyAt: nowTs,
           replyCount: 1,
-        } as Thread,
+        },
       },
       ['thread-bumped'],
     );
@@ -816,7 +817,7 @@ describe('ThreadsScreen — activity ordering', () => {
 // ---------------------------------------------------------------------------
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
-  return {
+  return makeThreadFixture({
     id: 'thread-1',
     conversationId: 'group-1',
     authorId: 'user-1',
@@ -830,7 +831,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     updatedAt: 10_000,
     syncStatus: 'synced',
     ...overrides,
-  } as Thread;
+  });
 }
 
 describe('getThreadState', () => {
@@ -874,7 +875,7 @@ describe('getThreadState', () => {
 describe('ThreadsScreen — block filtering', () => {
   const now = Date.now();
 
-  const threadByBlocked: Thread = {
+  const threadByBlocked: Thread = makeThreadFixture({
     id: 'thread-blocked',
     conversationId: 'group-1',
     authorId: 'u-blocked',
@@ -888,9 +889,9 @@ describe('ThreadsScreen — block filtering', () => {
     createdAt: now,
     updatedAt: now,
     syncStatus: 'synced',
-  } as Thread;
+  });
 
-  const threadByOk: Thread = {
+  const threadByOk: Thread = makeThreadFixture({
     id: 'thread-ok',
     conversationId: 'group-1',
     authorId: 'u-ok',
@@ -904,7 +905,7 @@ describe('ThreadsScreen — block filtering', () => {
     createdAt: now,
     updatedAt: now,
     syncStatus: 'synced',
-  } as Thread;
+  });
 
   beforeEach(() => {
     const storesMock = jest.requireMock('../../stores') as {
@@ -1234,7 +1235,7 @@ describe('ThreadsScreen — group key (#912)', () => {
 
     /** The threads slice, with or without this orbit's one row. */
     function threadsSlice(withRows: boolean) {
-      const thread: Thread = {
+      const thread: Thread = makeThreadFixture({
         id: 'thread-1',
         conversationId: 'group-1',
         authorId: 'user-1',
@@ -1248,7 +1249,7 @@ describe('ThreadsScreen — group key (#912)', () => {
         createdAt: now,
         updatedAt: now,
         syncStatus: 'synced',
-      };
+      });
       return {
         threads: withRows ? ({ 'thread-1': thread } as Record<string, Thread>) : {},
         threadIdsByConversation: withRows ? { 'group-1': ['thread-1'] } : {},

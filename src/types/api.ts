@@ -507,6 +507,27 @@ export interface ThreadResponse {
    * author is left out of this array (file header).
    */
   media: MediaMetadata[];
+  /**
+   * Server-derived Meta-import flag (Backend #317): `original_created_at IS NOT
+   * NULL`, which migration 046 makes immutable. Optional on the type only
+   * because a 1.7.7-era backend omits the key; absent and `false` mean the same
+   * thing (this is NOT one of the absent-vs-null fields in the file header).
+   *
+   * The backend also serves `import_id` (uuid|null) on this payload. It is
+   * deliberately NOT read by this client — its FK is `ON DELETE SET NULL`, so
+   * `is_import` is the only lasting sign a member sees. Never derive "is
+   * imported" from `importId != null`.
+   */
+  isImport?: boolean;
+  /**
+   * Sealed `ImportMetaV1` envelope (AES-GCM under the group key, AAD = the
+   * groupId — the same binding as `encryptedTitle`). DISPLAY ONLY: the AAD
+   * binds the orbit, not the thread, so a hostile server could move one
+   * imported thread's envelope onto another in the same orbit.
+   */
+  encryptedImportMeta?: string | null;
+  /** IV for {@link ThreadResponse.encryptedImportMeta}. */
+  importMetaIv?: string | null;
 }
 
 /**
@@ -546,6 +567,12 @@ export interface ThreadListItem {
    * `ThreadResponse.lastReplyAt`.
    */
   lastReplyAt?: string | null;
+  /** See {@link ThreadResponse.isImport}. `import_id` is served and unread. */
+  isImport?: boolean;
+  /** See {@link ThreadResponse.encryptedImportMeta}. Display only. */
+  encryptedImportMeta?: string | null;
+  /** IV for {@link ThreadListItem.encryptedImportMeta}. */
+  importMetaIv?: string | null;
 }
 
 /**

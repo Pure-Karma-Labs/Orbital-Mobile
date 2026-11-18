@@ -22,7 +22,7 @@
  */
 
 import type { Thread } from '../types/store';
-import { stripFormatChars, URL_PATTERN_SOURCE } from './urlPattern';
+import { URL_PATTERN_SOURCE } from './urlPattern';
 import { extractUrlHost } from './urlHost';
 
 /** What a caller shows when this returns null in a list row. */
@@ -47,6 +47,35 @@ const LINE_BREAK_RE = /[\r\n\u2028\u2029]/;
 const ZWJ = '\u200D';
 
 /**
+ * The characters a headline strips: the ones that can make a row read as a
+ * string it is not, and nothing else.
+ *
+ * - **Bidi controls** (U+061C, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069).
+ *   An RTL override makes "gnp.exe" read as "exe.png" with no visible cause,
+ *   and a list row has no surrounding context to correct it with.
+ * - **Zero-width non-emoji** (U+200B, U+200C, U+2060, U+FEFF). Invisible, and
+ *   usable to split a word or to pad a line past the cut.
+ *
+ * DELIBERATELY narrower than `stripFormatChars`, which removes every `Cf`
+ * character. That set also holds U+200D (ZWJ) and the tag block
+ * U+E0020-U+E007F, which spoof nothing: they are how a ZWJ emoji is built.
+ * Stripping them took every such emoji in an imported post apart into its
+ * components, which is the same damage {@link safeCutIndex} exists to
+ * prevent at the other end of the line.
+ *
+ * `stripFormatChars` itself is unchanged and still guards URL display:
+ * `extractUrlHost` applies it to every URL, including the one the link
+ * branch below hands it, so an invisible character inside a host is still
+ * removed before the host is shown.
+ */
+const SPOOF_CHARS_RE = /[\u061C\u200B\u200C\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/gu;
+
+/** {@link SPOOF_CHARS_RE} applied — the headline's own, narrower strip. */
+function stripSpoofChars(text: string): string {
+  return text.replace(SPOOF_CHARS_RE, '');
+}
+
+/**
  * Code points that attach to whatever precedes them: a cut must never land
  * immediately BEFORE one, because doing so orphans the base character they
  * modify (and, for a variation selector, changes how it renders).
@@ -57,12 +86,9 @@ const ZWJ = '\u200D';
  * - U+E0020–U+E007F — tag characters, the tail of a subdivision flag.
  * - ZWJ — the joiner itself.
  *
- * `stripFormatChars` runs FIRST on this path and removes every `Cf` character,
- * which today includes ZWJ and the tag characters: those two arms are
- * therefore defence in depth rather than live paths, and they are kept so that
- * narrowing the strip later cannot silently start splitting emoji. The
- * variation-selector, skin-tone, combining-mark and surrogate arms are live —
- * none of those characters is `Cf`.
+ * Every arm is LIVE. The headline's strip ({@link SPOOF_CHARS_RE}) keeps ZWJ
+ * and the tag characters precisely so these clusters reach the cut whole, and
+ * this function is what then refuses to cut inside one.
  */
 function attachesToPrevious(codePoint: string): boolean {
   if (codePoint === ZWJ) return true;
@@ -174,10 +200,11 @@ export function threadHeadline(
   const title = t.title ?? '';
   if (title.trim() !== '') return title;
 
-  // Format characters are stripped before anything is measured or matched: a
-  // bidi override in a row title can make the headline read as a different
+  // Spoofing characters are stripped before anything is measured or matched:
+  // a bidi override in a row title can make the headline read as a different
   // string entirely, and the list has no other context to correct it with.
-  const body = stripFormatChars(t.body ?? '');
+  // ZWJ and tag characters survive, so an emoji sequence stays one cluster.
+  const body = stripSpoofChars(t.body ?? '');
   const trimmedBody = body.trim();
 
   if (trimmedBody !== '') {

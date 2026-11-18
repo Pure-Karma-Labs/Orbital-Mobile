@@ -138,6 +138,8 @@ describe('threadHeadline — cutting near emoji and marks', () => {
   // Every case here is 61+ code points, so the cut always fires, and the
   // cluster always straddles index 60.
   const PAD = (n: number) => 'a'.repeat(n);
+  /** The Scotland flag: a waving-flag base plus six tag characters. */
+  const SCOTLAND = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}';
 
   it('never splits a surrogate pair', () => {
     const headline = threadHeadline(input({ body: PAD(59) + '\u{1F600}\u{1F600}' }))!;
@@ -177,17 +179,22 @@ describe('threadHeadline — cutting near emoji and marks', () => {
     expect(headline).not.toContain('\u0301');
   });
 
-  // A ZWJ sequence cannot reach the cut: `stripFormatChars` removes every Cf
-  // character — ZWJ and tag characters included — before anything is measured.
-  // The sequence therefore degrades to its component emoji, each of which is
-  // still cut whole. (safeCutIndex keeps its ZWJ and tag arms so that
-  // narrowing the strip later cannot start splitting them.)
-  it('cuts a ZWJ family sequence without producing a lone surrogate', () => {
+  // ZWJ and the tag characters SURVIVE the headline's strip, so a sequence
+  // reaches the cut as one cluster rather than as its components. The cut then
+  // refuses to land inside it: the whole family goes, and nothing is left
+  // half-built.
+  it('drops a whole ZWJ family sequence rather than splitting it', () => {
     const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}';
     const headline = threadHeadline(input({ body: PAD(59) + family + 'x' }))!;
-    expect(headline).toBe(`${PAD(59)}\u{1F468}…`);
+    expect(headline).toBe(`${PAD(59)}…`);
     expect(headline).not.toContain('\u200D');
     expect(hasLoneSurrogate(headline)).toBe(false);
+  });
+
+  it('drops a whole tag-sequence flag rather than splitting it', () => {
+    const headline = threadHeadline(input({ body: PAD(59) + SCOTLAND + 'x' }))!;
+    expect(headline).toBe(`${PAD(59)}…`);
+    expect(headline).not.toContain('\u{E0067}');
   });
 
   it('cuts everything rather than mangling a line of bare combining marks', () => {
@@ -195,18 +202,39 @@ describe('threadHeadline — cutting near emoji and marks', () => {
   });
 });
 
-describe('threadHeadline — format characters', () => {
-  it('strips a bidi override and zero-width characters', () => {
+describe('threadHeadline — spoofing characters', () => {
+  it('strips bidi controls and zero-width characters', () => {
     expect(threadHeadline(input({ body: 'hello\u202Eworld' }))).toBe('helloworld');
     expect(threadHeadline(input({ body: 'exa\u200Bmple' }))).toBe('example');
     expect(threadHeadline(input({ body: '\u202Egnp.exe' }))).toBe('gnp.exe');
+    // The rest of the set, each one invisible on its own.
+    expect(threadHeadline(input({ body: 'a\u061Cb\u200Ec\u200Fd' }))).toBe('abcd');
+    expect(threadHeadline(input({ body: '\u2066a\u2067b\u2068c\u2069' }))).toBe('abc');
+    expect(threadHeadline(input({ body: '\uFEFFa\u2060b\u200Cc' }))).toBe('abc');
+  });
+
+  // The regression this strip was narrowed for: `stripFormatChars` removes
+  // every Cf character, which took 👩‍💻 apart into a woman and a laptop in
+  // every row it appeared in.
+  it('keeps the joiners and tag characters that BUILD an emoji', () => {
+    const coder = '\u{1F469}\u200D\u{1F4BB}';
+    expect(threadHeadline(input({ body: `${coder} at work` }))).toBe(`${coder} at work`);
+
+    const rainbow = '\u{1F3F3}\uFE0F\u200D\u{1F308}';
+    expect(threadHeadline(input({ body: `pride ${rainbow}` }))).toBe(`pride ${rainbow}`);
+
+    const scotland = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}';
+    expect(threadHeadline(input({ body: `from ${scotland}` }))).toBe(`from ${scotland}`);
+
+    // A title is returned untouched, so it never went through either strip.
+    expect(threadHeadline(input({ title: coder }))).toBe(coder);
   });
 
   it('strips them before the URL test, so a spoofed link still reduces to a host', () => {
     expect(threadHeadline(input({ body: 'https://exa\u202Emple.com/x' }))).toBe('example.com');
   });
 
-  it('treats a body of nothing but format characters as empty', () => {
+  it('treats a body of nothing but spoofing characters as empty', () => {
     expect(threadHeadline(input({ body: '\u202E\u200B', mediaCount: 2 }))).toBe('2 photos');
     expect(threadHeadline(input({ body: '\u202E\u200B', mediaCount: 0 }))).toBeNull();
   });

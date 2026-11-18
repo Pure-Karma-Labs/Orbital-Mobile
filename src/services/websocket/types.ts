@@ -160,6 +160,25 @@ export interface MediaUploadedPayload {
   expiresAt: string;
 }
 
+/**
+ * A Meta archive import finished (Backend #317/#318). Deliberately SILENT:
+ * imported content is historical, so this event exists to let a member who is
+ * already looking at the orbit see the rows arrive, and for nothing else — no
+ * unread, no badge, no push. The author's own other devices receive it too, so
+ * they can drop their "import in progress" UI.
+ *
+ * Emitted on a real completion only: abandoning a session broadcasts nothing,
+ * and so does the operator-only delete-by-import.
+ */
+export interface ImportCompletedPayload {
+  type: 'import_completed';
+  groupId: string;
+  importId: string;
+  authorId: string;
+  /** Threads this session actually created. `0` means nothing to fetch. */
+  createdPosts: number;
+}
+
 export type BroadcastPayload =
   | NewThreadPayload
   | NewReplyPayload
@@ -168,7 +187,8 @@ export type BroadcastPayload =
   | AvatarChangedPayload
   | OwnerChangedPayload
   | TypingPayload
-  | MediaUploadedPayload;
+  | MediaUploadedPayload
+  | ImportCompletedPayload;
 
 // ============================================================
 // Broadcast envelope (wraps all broadcast payloads)

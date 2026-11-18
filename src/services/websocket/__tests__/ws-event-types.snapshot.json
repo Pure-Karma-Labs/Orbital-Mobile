@@ -4,7 +4,10 @@
     "NEW_REPLY": "new_reply",
     "NEW_MESSAGE": "new_message",
     "DISPLAY_NAME_CHANGED": "display_name_changed",
-    "MEDIA_UPLOADED": "media_uploaded"
+    "MEDIA_UPLOADED": "media_uploaded",
+    "AVATAR_CHANGED": "avatar_changed",
+    "OWNER_CHANGED": "owner_changed",
+    "IMPORT_COMPLETED": "import_completed"
   },
   "unicastTypes": {
     "WRAP_KEY_REQUEST": "wrap_key_request",

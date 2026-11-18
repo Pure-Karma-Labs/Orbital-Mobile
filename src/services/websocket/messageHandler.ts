@@ -20,7 +20,7 @@ import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey, normalizeId
 import { base64ToArrayBuffer } from '../crypto/utils';
 import { VerifiedStatus } from '../../types/database';
 import { submitWrappedKey } from '../api/groups';
-import { decryptThreadFields, decryptReplyBody, processMediaMetadata, applyReplyToParentThread, getKnownThreadAuthorId } from '../threadService';
+import { decryptThreadFields, decryptReplyBody, processMediaMetadata, applyReplyToParentThread, getKnownThreadAuthorId, loadThreadsForGroup } from '../threadService';
 import { ensureDmConversation, hydrateContactsFromOrbits, refreshContactAvatar, retryPendingNameDecrypt, retryAllPendingNameDecrypts, markConversationReadEverywhere } from '../conversationService';
 import { isDatabaseInitialized } from '../../database/connection';
 import { saveThread as dbSaveThread } from '../../database/repositories/threadRepository';
@@ -40,6 +40,7 @@ import type {
   WrapKeyRequestPayload,
   WrappedKeyDeliveredPayload,
   MediaUploadedPayload,
+  ImportCompletedPayload,
 } from './types';
 import type { Thread, Reply } from '../../types/store';
 
@@ -131,6 +132,7 @@ export const KNOWN_BROADCAST_TYPES = new Set([
   'media_uploaded',
   'avatar_changed',
   'owner_changed',
+  'import_completed',
 ]);
 
 export const KNOWN_UNICAST_TYPES = new Set([
@@ -281,6 +283,10 @@ async function handleBroadcast(envelope: BroadcastEnvelope): Promise<void> {
 
     case 'owner_changed':
       handleOwnerChanged(data as OwnerChangedPayload);
+      break;
+
+    case 'import_completed':
+      handleImportCompleted(data as ImportCompletedPayload);
       break;
   }
 }
@@ -634,6 +640,54 @@ function handleOwnerChanged(data: OwnerChangedPayload): void {
     ...conversation,
     isCreator,
   });
+}
+
+// ============================================================
+// import_completed handler (#927)
+// ============================================================
+
+/**
+ * A Meta import finished in an orbit: refetch that orbit's thread list so a
+ * member who is already looking at it sees the rows arrive.
+ *
+ * SILENT, deliberately. No unread count, no badge, no `bumpLastMessageAt`, no
+ * notification — imported content is historical, and announcing a 5,000-post
+ * backfill would be indistinguishable from spam. The server agrees: it leaves
+ * imported threads out of `unread_count` and `last_message_at`.
+ *
+ * REACHABILITY LIMIT (#923): this client fetches ONE page of 50 threads, and a
+ * past-dated import sorts to the tail under both server orders. So in a busy
+ * orbit the refetch below surfaces nothing — the rows only become reachable
+ * once #923's `created_desc` cursor walk lands. It still pays for itself in a
+ * small orbit, and for a same-day import.
+ *
+ * The skips are all "there is nothing this refetch could show": an unknown
+ * conversation, a DM (the backend never imports into one), an orbit whose
+ * threads this session has never loaded (hydrating it here would populate a
+ * screen nobody has opened, and the screen's own load covers that case), and a
+ * session that created no posts at all.
+ */
+function handleImportCompleted(data: ImportCompletedPayload): void {
+  if (!isValidUUIDv4(data.groupId)) {
+    console.error('[WS:invalid_uuid]');
+    return;
+  }
+
+  const store = useAppStore.getState();
+  const conversation = store.conversations[data.groupId];
+  if (!conversation || conversation.type !== 'group') return;
+
+  // Never loaded in this session — `undefined`, not an empty array, which is a
+  // loaded orbit that happens to have no threads.
+  if (store.threadIdsByConversation[data.groupId] === undefined) return;
+
+  if (data.createdPosts === 0) return;
+
+  // Fire-and-forget: a failed refetch is the same as never having run, and the
+  // screen reloads on focus anyway. The rejection is swallowed rather than
+  // reported — it carries a server error for a list the member may not even be
+  // looking at.
+  void loadThreadsForGroup(data.groupId).catch(() => {});
 }
 
 // ============================================================

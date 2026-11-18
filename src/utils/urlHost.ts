@@ -80,7 +80,11 @@ export function extractUrlHost(url: string): string | null {
     const close = authority.indexOf(']');
     if (close === -1) return null;
     host = authority.slice(1, close);
-    if (host === '' || /[\s/?#@[\]]/.test(host)) return null;
+    // The brackets may hold an IPv6 address and nothing else: hex groups and
+    // colons, an optional embedded dotted quad, and an optional zone id
+    // (`%25eth0`). Anything else — a name, a percent-encoded dot — is not a
+    // host this function will display, however it is wrapped.
+    if (!/^[0-9a-f:.]+(?:%25[0-9a-z_.~-]+)?$/i.test(host) || !host.includes(':')) return null;
     return host.toLowerCase();
   }
 

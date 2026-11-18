@@ -67,6 +67,12 @@ describe('extractUrlHost', () => {
     expect(extractUrlHost('https://[2001:DB8::1]/x')).toBe('2001:db8::1');
     // An unterminated literal is not a host.
     expect(extractUrlHost('https://[::1/x')).toBeNull();
+    // Brackets hold an IPv6 address and nothing else: a name wrapped in them,
+    // percent-encoded dot and all, is not a host to display.
+    expect(extractUrlHost('https://[paypal.com%2Eevil.test]/')).toBeNull();
+    expect(extractUrlHost('https://[example.com]/')).toBeNull();
+    expect(extractUrlHost('https://[::ffff:192.0.2.1]/')).toBe('::ffff:192.0.2.1');
+    expect(extractUrlHost('https://[fe80::1%25eth0]/')).toBe('fe80::1%25eth0');
   });
 
   it('accepts any scheme, because the caller decides what may be opened', () => {

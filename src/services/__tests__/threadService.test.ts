@@ -2445,6 +2445,25 @@ describe('#927 import display mapping', () => {
       expect(thread.importSource).toBe('facebook');
     });
 
+    it('does not carry a flag cached under a DIFFERENT conversation', async () => {
+      // The cached row passed the orbit gate for `other-orbit`. The server now
+      // serves the same thread id under `group-1`, which the store does not
+      // know: the flag is not evidence about this conversation.
+      setStoreThreads({
+        'thread-1': makeStoredThread({
+          conversationId: 'other-orbit',
+          isImport: true,
+          importSource: 'facebook',
+        }),
+      });
+
+      const thread = await loadThread('thread-1');
+
+      expect(thread.isImport).toBe(false);
+      expect(thread.importSource).toBeNull();
+      expect((mockDbSaveThread.mock.calls[0][0] as Thread).isImport).toBe(false);
+    });
+
     it('maps as a non-import when nothing is cached', async () => {
       const thread = await loadThread('thread-1');
 

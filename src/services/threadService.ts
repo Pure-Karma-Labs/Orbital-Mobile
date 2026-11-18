@@ -885,9 +885,20 @@ function conversationGate(groupId: string): ConversationGate {
  *
  * Only read on the `'unknown'` gate, so the DB hit happens on the cold-open
  * path alone. `safeDbGetThread` never throws.
+ *
+ * SCOPED TO THE CONVERSATION being mapped: a cached row filed under a
+ * different conversation is not evidence about this one. The cached flag
+ * passed the orbit gate for the conversation it was written under, so
+ * carrying it onto a row the server now serves under another `groupId` (a DM,
+ * say) would flag a row that never passed any gate. A legitimate cold open
+ * always matches.
  */
-function cachedImportDisplay(threadId: string): Pick<Thread, 'isImport' | 'importSource'> | null {
-  return getStoreActions().threads[threadId] ?? safeDbGetThread(threadId);
+function cachedImportDisplay(
+  threadId: string,
+  groupId: string,
+): Pick<Thread, 'isImport' | 'importSource'> | null {
+  const cached = getStoreActions().threads[threadId] ?? safeDbGetThread(threadId);
+  return cached != null && cached.conversationId === groupId ? cached : null;
 }
 
 /**
@@ -994,7 +1005,7 @@ async function mapThreadResponse(
     groupKey,
     response.groupId,
     detailGate,
-    detailGate === 'unknown' ? cachedImportDisplay(response.threadId) : null,
+    detailGate === 'unknown' ? cachedImportDisplay(response.threadId, response.groupId) : null,
   );
 
   return {
@@ -1092,7 +1103,7 @@ async function mapThreadListItem(
     groupKey,
     item.groupId,
     gate,
-    gate === 'unknown' ? cachedImportDisplay(item.threadId) : null,
+    gate === 'unknown' ? cachedImportDisplay(item.threadId, item.groupId) : null,
   );
 
   return {

@@ -27,10 +27,23 @@
  * takes no FK outside its own three tables, so a minimal in-memory DB is a
  * faithful stage — and one that does not depend on Node's SQLite being built
  * with FTS5 (migration 005).
+ *
+ * 010 CANNOT be staged that way. It is an `ALTER TABLE orbital_threads ADD
+ * COLUMN`, so the table has to exist in the shape the device has it in, and
+ * what the ALTER must not break (the 005 FTS5 triggers) only exists after 005.
+ * So the 010 suite below execs the REAL chain that builds that table — 001,
+ * then 004's rebuild with foreign keys off exactly as the runner does it, then
+ * 005 — and only then the migration under test. A string-only pin would prove
+ * nothing about an ALTER. FTS5 is required for that leg and is present in
+ * Node's bundled SQLite on both 22 and 24 (verified).
  */
 
 import { DatabaseSync } from 'node:sqlite';
+import { SQL as SQL_V1 } from '../migrations/001_initial_schema';
+import { SQL as SQL_V4 } from '../migrations/004_thread_reply_persistence';
+import { SQL as SQL_V5 } from '../migrations/005_fts5_search';
 import { SQL as SQL_V9, VERSION as V9 } from '../migrations/009_meta_import_tables';
+import { SQL as SQL_V10, VERSION as V10 } from '../migrations/010_thread_import_display';
 
 const JOB = 'job-1';
 
@@ -292,6 +305,219 @@ describe('migration 009 DDL (executed on node:sqlite)', () => {
         .map((r) => String(r.name));
       expect(columns).not.toContain('source_item_id');
     }
+    db.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Migration 010 — the thread import-display columns (#927)
+// ---------------------------------------------------------------------------
+
+const THREAD_COLUMNS = [
+  'id',
+  'conversation_id',
+  'author_id',
+  'title',
+  'body',
+  'author_username',
+  'content_type',
+  'pinned',
+  'reply_count',
+  'last_reply_at',
+  'created_at',
+  'updated_at',
+  'sync_status',
+] as const;
+
+/**
+ * The orbital_threads chain as the device applies it, up to but NOT including
+ * the migration under test: 001 creates the table, 004 rebuilds it without FKs
+ * (foreign keys off, as `migrations/index.ts` does for that version), 005 hangs
+ * the FTS5 triggers off it.
+ */
+function openThreadChain(): DatabaseSync {
+  const db = new DatabaseSync(':memory:');
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec(SQL_V1);
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(SQL_V4);
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec(SQL_V5);
+  return db;
+}
+
+/** Insert a thread naming ONLY the pre-010 columns. */
+function insertLegacyThread(db: DatabaseSync, id: string, body: string | null = 'post body'): void {
+  db.prepare(
+    `INSERT INTO orbital_threads
+       (${THREAD_COLUMNS.join(', ')})
+     VALUES (?, ?, ?, ?, ?, ?, 'text', 0, 0, NULL, 1700000000000, 1700000000000, 'synced')`,
+  ).run(id, 'conv-1', 'user-1', 'A title', body, 'alice');
+}
+
+describe('migration 010 DDL (executed on the real 001→004→005 chain)', () => {
+  it('declares VERSION 10, one past 009', () => {
+    expect(V10).toBe(10);
+    expect(V10).toBe(V9 + 1);
+  });
+
+  it('adds exactly three columns, with the declared types and defaults', () => {
+    const db = openThreadChain();
+    const before = db
+      .prepare('PRAGMA table_info(orbital_threads)')
+      .all()
+      .map((r) => String(r.name));
+    expect(before).not.toContain('is_import');
+
+    db.exec(SQL_V10);
+
+    const after = db.prepare('PRAGMA table_info(orbital_threads)').all();
+    const names = after.map((r) => String(r.name));
+    expect(names.filter((n) => !before.includes(n))).toEqual([
+      'is_import',
+      'import_source',
+      'media_count',
+    ]);
+
+    const byName = new Map(after.map((r) => [String(r.name), r]));
+    const isImport = byName.get('is_import')!;
+    expect(String(isImport.type)).toBe('INTEGER');
+    expect(Number(isImport.notnull)).toBe(1);
+    expect(String(isImport.dflt_value)).toBe('0');
+
+    const source = byName.get('import_source')!;
+    expect(String(source.type)).toBe('TEXT');
+    expect(Number(source.notnull)).toBe(0);
+    expect(source.dflt_value).toBeNull();
+
+    const count = byName.get('media_count')!;
+    expect(String(count.type)).toBe('INTEGER');
+    expect(Number(count.notnull)).toBe(0);
+    expect(count.dflt_value).toBeNull();
+
+    db.close();
+  });
+
+  it('gives a row written BEFORE the migration the new defaults', () => {
+    const db = openThreadChain();
+    insertLegacyThread(db, 'thread-pre');
+    db.exec(SQL_V10);
+
+    const row = db
+      .prepare('SELECT is_import, import_source, media_count FROM orbital_threads WHERE id = ?')
+      .get('thread-pre')!;
+    expect(Number(row.is_import)).toBe(0);
+    expect(row.import_source).toBeNull();
+    expect(row.media_count).toBeNull();
+    db.close();
+  });
+
+  it('gives an INSERT that omits the new columns the same defaults', () => {
+    const db = openThreadChain();
+    db.exec(SQL_V10);
+    insertLegacyThread(db, 'thread-post');
+
+    const row = db
+      .prepare('SELECT is_import, import_source, media_count FROM orbital_threads WHERE id = ?')
+      .get('thread-post')!;
+    expect(Number(row.is_import)).toBe(0);
+    expect(row.import_source).toBeNull();
+    expect(row.media_count).toBeNull();
+    db.close();
+  });
+
+  it('round-trips the repository INSERT, including an imported row', () => {
+    const db = openThreadChain();
+    db.exec(SQL_V10);
+
+    // The exact column list and placeholder count threadRepository.saveThread
+    // binds, in its order — 13 existing columns then the three appended ones.
+    db.prepare(
+      `INSERT OR REPLACE INTO orbital_threads
+         (${THREAD_COLUMNS.join(', ')}, is_import, import_source, media_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'thread-import',
+      'conv-1',
+      'user-1',
+      '',
+      'imported body',
+      'alice',
+      'media',
+      0,
+      0,
+      null,
+      1700000000000,
+      1700000000000,
+      'synced',
+      1,
+      'facebook',
+      3,
+    );
+
+    const row = db
+      .prepare(
+        'SELECT sync_status, is_import, import_source, media_count FROM orbital_threads WHERE id = ?',
+      )
+      .get('thread-import')!;
+    // sync_status still holds a sync status: proof the appended params did not
+    // shift into it.
+    expect(String(row.sync_status)).toBe('synced');
+    expect(Number(row.is_import)).toBe(1);
+    expect(String(row.import_source)).toBe('facebook');
+    expect(Number(row.media_count)).toBe(3);
+    db.close();
+  });
+
+  it('leaves the 005 FTS triggers firing on insert, update and delete', () => {
+    const db = openThreadChain();
+    db.exec(SQL_V10);
+
+    const ftsCount = (): number =>
+      Number(db.prepare('SELECT COUNT(*) AS n FROM thread_fts').get()!.n);
+
+    insertLegacyThread(db, 'thread-fts', 'searchable body');
+    expect(ftsCount()).toBe(1);
+    expect(
+      Number(
+        db.prepare("SELECT COUNT(*) AS n FROM thread_fts WHERE thread_fts MATCH 'searchable'").get()!
+          .n,
+      ),
+    ).toBe(1);
+
+    db.prepare('UPDATE orbital_threads SET body = ? WHERE id = ?').run('rewritten', 'thread-fts');
+    expect(
+      Number(
+        db.prepare("SELECT COUNT(*) AS n FROM thread_fts WHERE thread_fts MATCH 'rewritten'").get()!
+          .n,
+      ),
+    ).toBe(1);
+
+    db.prepare('DELETE FROM orbital_threads WHERE id = ?').run('thread-fts');
+    expect(ftsCount()).toBe(0);
+    db.close();
+  });
+
+  it('leaves the database consistent: integrity_check ok, no FK violations', () => {
+    const db = openThreadChain();
+    insertLegacyThread(db, 'thread-pre');
+    db.exec(SQL_V10);
+    insertLegacyThread(db, 'thread-post');
+
+    expect(db.prepare('PRAGMA integrity_check').all()).toEqual([{ integrity_check: 'ok' }]);
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    db.close();
+  });
+
+  it('adds no import_id and no date column', () => {
+    const db = openThreadChain();
+    db.exec(SQL_V10);
+    const names = db
+      .prepare('PRAGMA table_info(orbital_threads)')
+      .all()
+      .map((r) => String(r.name));
+    expect(names).not.toContain('import_id');
+    expect(names).not.toContain('original_created_at');
     db.close();
   });
 });

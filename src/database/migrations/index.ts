@@ -8,6 +8,7 @@ import { VERSION as V6, SQL as SQL_V6 } from './006_media_thumbnail_ref';
 import { VERSION as V7, SQL as SQL_V7 } from './007_media_archive_confirmed';
 import { VERSION as V8, SQL as SQL_V8 } from './008_drop_media_sync_tables';
 import { VERSION as V9, SQL as SQL_V9 } from './009_meta_import_tables';
+import { VERSION as V10, SQL as SQL_V10 } from './010_thread_import_display';
 
 interface Migration {
   version: number;
@@ -26,6 +27,9 @@ const migrations: Migration[] = [
   { version: V8, sql: SQL_V8 },
   // 009 only CREATEs tables and indexes — no rebuild, so no disableForeignKeys.
   { version: V9, sql: SQL_V9 },
+  // 010 is three ADD COLUMNs on orbital_threads — no rebuild, so the 005 FTS
+  // triggers survive and no FK re-check is needed.
+  { version: V10, sql: SQL_V10 },
 ];
 
 /**

@@ -61,7 +61,9 @@ describe('runMigrations', () => {
   it('skips migration that has already been applied', () => {
     const executeSync = jest.fn((sql: string) => {
       if (sql === 'PRAGMA user_version') {
-        return { rows: [{ user_version: 9 }], rowsAffected: 0 };
+        // The CURRENT head version: this case is "nothing left to run", so it
+        // has to move with every new migration.
+        return { rows: [{ user_version: 10 }], rowsAffected: 0 };
       }
       return { rows: [], rowsAffected: 0 };
     });
@@ -166,6 +168,38 @@ describe('runMigrations', () => {
     // 009 only CREATEs — no table rebuild, so no FK toggle
     const fkOffCount = sqls.filter((s) => s === 'PRAGMA foreign_keys = OFF').length;
     expect(fkOffCount).toBe(0);
+  });
+
+  it('runs v10 migration adding the thread import-display columns', () => {
+    const executeSync = jest.fn((sql: string) => {
+      if (sql === 'PRAGMA user_version') {
+        return { rows: [{ user_version: 9 }], rowsAffected: 0 };
+      }
+      return { rows: [], rowsAffected: 0 };
+    });
+    makeDb(executeSync);
+    runMigrations();
+
+    const sqls = (executeSync.mock.calls as unknown as [string][]).map(([sql]) => sql);
+    const v10Sql = sqls.find((s) => s.includes('is_import'));
+    expect(v10Sql).toBeDefined();
+
+    expect(v10Sql).toContain(
+      'ALTER TABLE orbital_threads ADD COLUMN is_import INTEGER NOT NULL DEFAULT 0',
+    );
+    expect(v10Sql).toContain('ALTER TABLE orbital_threads ADD COLUMN import_source TEXT');
+    expect(v10Sql).toContain('ALTER TABLE orbital_threads ADD COLUMN media_count INTEGER');
+
+    // No import_id and no date column — the client reads neither (#927).
+    expect(v10Sql).not.toMatch(/import_id|original_created_at/);
+
+    expect(sqls).toContain('PRAGMA user_version = 10');
+
+    // ADD COLUMN only: no table rebuild, so no FK toggle and the 005 FTS
+    // triggers on orbital_threads are left standing.
+    const fkOffCount = sqls.filter((s) => s === 'PRAGMA foreign_keys = OFF').length;
+    expect(fkOffCount).toBe(0);
+    expect(v10Sql).not.toMatch(/CREATE TABLE|DROP TABLE|RENAME TO/);
   });
 
   it('migration 009 persists no sourceItemId (plaintext-class, #921/#925)', () => {

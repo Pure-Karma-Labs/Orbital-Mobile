@@ -866,6 +866,23 @@ describe('getThreadState', () => {
     expect(getThreadState(thread, {}, 25_000)).toBe('unread');
     expect(getThreadState(thread, {}, 35_000)).toBe('read');
   });
+
+  // #927: the server leaves imported threads out of the orbit's unread_count,
+  // so a dotted import row would sit next to an orbit badge of 0.
+  it('returns read for an unreplied import, however new, with a native control', () => {
+    const imported = makeThread({ isImport: true, createdAt: 30_000, lastReplyAt: null });
+    expect(getThreadState(imported, {}, 25_000)).toBe('read');
+    // Identical timestamps, not an import.
+    expect(
+      getThreadState(makeThread({ createdAt: 30_000, lastReplyAt: null }), {}, 25_000),
+    ).toBe('unread');
+  });
+
+  it('returns unread for an import whose REPLY is newer than the watermark', () => {
+    const replied = makeThread({ isImport: true, createdAt: 30_000, lastReplyAt: 28_000 });
+    expect(getThreadState(replied, {}, 25_000)).toBe('unread');
+    expect(getThreadState(replied, {}, 29_000)).toBe('read');
+  });
 });
 
 // ---------------------------------------------------------------------------

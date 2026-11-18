@@ -136,6 +136,35 @@ export function compareThreadsByActivityDesc(
 }
 
 /**
+ * When a thread last moved FOR UNREAD PURPOSES (#927).
+ *
+ * The same answer as {@link threadActivityAt} for every ordinary thread. For an
+ * IMPORTED thread it is the thread's replies alone: `lastReplyAt` when that is
+ * a usable timestamp, and NaN — "no activity", which `getThreadState` reads as
+ * read — when there are none.
+ *
+ * Why imports are excluded: the server leaves them out of the orbit's
+ * `unread_count` and out of `last_message_at` (Backend #317), because imported
+ * content is historical and is not new to anyone. The client's per-thread read
+ * state has to agree, or every member of an orbit sees a dotted row for every
+ * post of a backfill sitting next to an orbit badge of 0. Replies TO an
+ * imported thread are ordinary activity on both sides.
+ *
+ * DISPLAY AND COMPARISON ONLY, like `threadActivityAt` — never stored, and
+ * ordering and day grouping keep using `threadActivityAt`, so an import keeps
+ * its place in the list and its day header.
+ */
+export function unreadActivityAt(
+  t: Pick<Thread, 'createdAt' | 'lastReplyAt' | 'isImport'>,
+): number {
+  if (t?.isImport === true) {
+    const replied = t.lastReplyAt;
+    return isValidTimestamp(replied) ? replied : NaN;
+  }
+  return threadActivityAt(t);
+}
+
+/**
  * The newer of two timestamps, sanitised — the ONLY function allowed to produce
  * a value that gets STORED as `lastReplyAt` or `lastMessageAt`.
  *

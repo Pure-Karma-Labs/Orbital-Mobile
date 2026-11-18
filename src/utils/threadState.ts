@@ -6,13 +6,14 @@
  */
 
 import type { Thread } from '../types/store';
-import { threadActivityAt } from './threadActivity';
+import { unreadActivityAt } from './threadActivity';
 
 /**
  * Compute per-thread unread state.
  *
- * A thread is 'unread' when its latest activity (`threadActivityAt`: the newer
- * of createdAt and lastReplyAt) is more recent than both:
+ * A thread is 'unread' when its latest activity (`unreadActivityAt`: the newer
+ * of createdAt and lastReplyAt, or replies alone for an import) is more recent
+ * than both:
  *   - the user's last view of that specific thread (threadLastViewedAt)
  *   - the server-side lastReadAt watermark for the conversation (snapshot)
  *
@@ -25,7 +26,13 @@ export function getThreadState(
   threadLastViewedAt: Record<string, number>,
   lastReadAtSnapshot: number | null,
 ): 'read' | 'active' | 'unread' {
-  const threadActivity = threadActivityAt(thread);
+  // TRUST BOUNDARY (#927): `unreadActivityAt` reads `thread.isImport`, which is
+  // a SERVER-SUPPLIED PLAINTEXT FLAG accepted per the Backend #317 hand-off —
+  // not something an opened envelope proves. A forged flag can only mark a row
+  // READ, never unread. `threadService.resolveImportDisplay` additionally
+  // refuses to set it outside a conversation the store already knows is a
+  // group, so a stray flag can never reach a DM row and silence its dot.
+  const threadActivity = unreadActivityAt(thread);
   const viewedAt = threadLastViewedAt[thread.id] ?? 0;
   const watermark = Math.max(viewedAt, lastReadAtSnapshot ?? 0);
 

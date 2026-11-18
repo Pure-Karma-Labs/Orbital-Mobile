@@ -12,8 +12,10 @@ import {
   compareThreadsByActivityDesc,
   maxTimestamp,
   threadActivityAt,
+  unreadActivityAt,
   type ThreadActivityInput,
 } from '../threadActivity';
+import type { Thread } from '../../types/store';
 
 // ---------------------------------------------------------------------------
 // Representative set
@@ -253,5 +255,50 @@ describe('maxTimestamp', () => {
         }
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// unreadActivityAt (#927)
+// ---------------------------------------------------------------------------
+
+describe('unreadActivityAt', () => {
+  const thread = (t: Partial<Thread>): Pick<Thread, 'createdAt' | 'lastReplyAt' | 'isImport'> => ({
+    createdAt: 10_000,
+    lastReplyAt: null,
+    isImport: false,
+    ...t,
+  });
+
+  it('agrees with threadActivityAt for a thread that is not an import', () => {
+    for (const t of [
+      thread({}),
+      thread({ lastReplyAt: 20_000 }),
+      thread({ createdAt: NaN, lastReplyAt: 20_000 }),
+      thread({ createdAt: NaN, lastReplyAt: null }),
+    ]) {
+      expect(unreadActivityAt(t)).toEqual(threadActivityAt(t));
+    }
+  });
+
+  it('returns NaN for an import with no valid reply', () => {
+    expect(unreadActivityAt(thread({ isImport: true }))).toBeNaN();
+    expect(unreadActivityAt(thread({ isImport: true, lastReplyAt: NaN }))).toBeNaN();
+    expect(unreadActivityAt(thread({ isImport: true, lastReplyAt: 0 }))).toBeNaN();
+    expect(unreadActivityAt(thread({ isImport: true, lastReplyAt: Infinity }))).toBeNaN();
+  });
+
+  it('returns the reply time for a replied import, never its createdAt', () => {
+    // Even when createdAt is NEWER: the post itself is historical, the reply
+    // is not.
+    expect(unreadActivityAt(thread({ isImport: true, createdAt: 99_000, lastReplyAt: 20_000 }))).toBe(
+      20_000,
+    );
+  });
+
+  it('leaves ordering untouched — threadActivityAt still sees the import date', () => {
+    const imported = thread({ isImport: true, createdAt: 99_000, lastReplyAt: null });
+    expect(threadActivityAt(imported)).toBe(99_000);
+    expect(unreadActivityAt(imported)).toBeNaN();
   });
 });

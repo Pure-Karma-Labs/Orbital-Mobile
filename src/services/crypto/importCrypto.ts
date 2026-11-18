@@ -82,11 +82,16 @@
  *
  * ## The read path
  *
- * {@link openImportMetaWithKey} is the read path's door (#927), called once per
- * fetched row by `threadService.resolveImportDisplay` with the group key that
- * load already holds. {@link openImportMeta} is the key-fetching wrapper and
- * {@link parseImportMetaPlaintext} the plaintext-only entry; both are kept for
- * callers that do not already have a key or a ciphertext.
+ * {@link openImportMetaWithKey} is the read path's ONLY door (#927), called
+ * once per fetched row by `threadService.resolveImportDisplay` with the group
+ * key that load already holds. {@link parseImportMetaPlaintext} is the
+ * plaintext-only entry beneath it, for a caller that already has the JSON.
+ *
+ * There is deliberately no key-FETCHING wrapper. One existed until the read
+ * path landed and never had a production caller: every reader maps a page of
+ * rows under a key it has already fetched, and a per-row `getOrFetchGroupKey`
+ * would be an await inside the mapping loop and a chance for the key to be
+ * invalidated mid-page. A caller without a key fetches it, once, itself.
  */
 
 import { hkdfSha256, hmacSha256 } from 'orbital-signal';
@@ -247,8 +252,8 @@ export class ImportUserIdError extends Error {
  *
  * A tamper signal, never `null`: the group key opened everything else in the
  * thread, so a GCM tag failure here means these bytes are not what this device
- * wrote. `null` from {@link openImportMeta} is reserved for ciphertext that
- * DID authenticate and simply is not a v1 envelope.
+ * wrote. `null` from {@link openImportMetaWithKey} is reserved for ciphertext
+ * that DID authenticate and simply is not a v1 envelope.
  */
 export class ImportMetaAuthError extends Error {
   constructor() {
@@ -752,30 +757,15 @@ export async function openImportKeySession(
 }
 
 /**
- * Open a sealed import-meta envelope (#927's read path).
+ * Open a sealed import-meta envelope with a group key the caller already
+ * holds, and no await of its own (#927's read path).
  *
  * Error contract:
- *  - `PendingWrapError` / `GroupKeyUnwrapError` from the group-key fetch
- *    propagate unchanged — the envelope may well be fine, the key just is not
- *    here yet.
  *  - A GCM authentication failure, or base64 that will not decode, throws
  *    {@link ImportMetaAuthError}.
  *  - `null` means the plaintext authenticated but is not a v1 envelope.
  *
- * Needs no session: it derives nothing, and reads only the group key.
- */
-export async function openImportMeta(
-  encryptedImportMeta: string,
-  importMetaIv: string,
-  groupId: string,
-): Promise<ImportMetaV1 | null> {
-  const groupKey = await getOrFetchGroupKey(groupId);
-  return openImportMetaWithKey(encryptedImportMeta, importMetaIv, groupKey, groupId);
-}
-
-/**
- * {@link openImportMeta} with a group key the caller already holds, and no
- * await of its own (#927).
+ * Needs no session: it derives nothing, and reads no key of its own.
  *
  * The thread-list path fetches the orbit's key once for the whole page, and it
  * maps rows inside a `Promise.all`; a second `getOrFetchGroupKey` per row would
@@ -783,9 +773,6 @@ export async function openImportMeta(
  * SYNCHRONOUS so the caller can treat opening an envelope as a pure step of
  * mapping a row, and so the key it was handed cannot be zeroed in place across
  * an await inside this function.
- *
- * Same error contract as {@link openImportMeta} minus the key-fetch errors,
- * which cannot arise here.
  *
  * The wire caps are checked BEFORE any decode. The server bounds these columns
  * too, but a hostile or buggy response is exactly the input this function

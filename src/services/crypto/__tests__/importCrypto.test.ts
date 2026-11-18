@@ -89,7 +89,6 @@ import {
   importKeyToWire,
   ImportUserIdError,
   openImportKeySession,
-  openImportMeta,
   openImportMetaWithKey,
   parseImportMetaPlaintext,
 } from '../importCrypto';
@@ -421,7 +420,7 @@ describe('session lifecycle', () => {
 // Sealing and opening
 // ---------------------------------------------------------------------------
 
-describe('sealImportMeta / openImportMeta', () => {
+describe('sealImportMeta', () => {
   const POST_DATE = 1345982400000;
 
   it('seals the exact v1 plaintext and round-trips it through the real cipher', async () => {
@@ -431,7 +430,7 @@ describe('sealImportMeta / openImportMeta', () => {
     expect(encryptedImportMeta.length).toBeLessThanOrEqual(1024);
     expect(importMetaIv.length).toBeLessThanOrEqual(64);
 
-    const opened = await openImportMeta(encryptedImportMeta, importMetaIv, GROUP_ID);
+    const opened = openImportMetaWithKey(encryptedImportMeta, importMetaIv, key(0x42), GROUP_ID);
     expect(opened).toEqual({ v: 1, source: 'facebook', originalCreatedAt: POST_DATE });
     session.close();
   });
@@ -440,13 +439,13 @@ describe('sealImportMeta / openImportMeta', () => {
     const session = await open({ source: 'instagram' });
     const sealed = await session.sealImportMeta(POST_DATE);
 
-    expect(await openImportMeta(sealed.encryptedImportMeta, sealed.importMetaIv, GROUP_ID)).toEqual(
-      {
-        v: 1,
-        source: 'instagram',
-        originalCreatedAt: POST_DATE,
-      },
-    );
+    expect(
+      openImportMetaWithKey(sealed.encryptedImportMeta, sealed.importMetaIv, key(0x42), GROUP_ID),
+    ).toEqual({
+      v: 1,
+      source: 'instagram',
+      originalCreatedAt: POST_DATE,
+    });
     session.close();
   });
 
@@ -507,48 +506,9 @@ describe('sealImportMeta / openImportMeta', () => {
     session.close();
   });
 
-  it('raises ImportMetaAuthError — not null — when one ciphertext byte is flipped', async () => {
-    const session = await open();
-    const { encryptedImportMeta, importMetaIv } = await session.sealImportMeta(POST_DATE);
-    session.close();
-
-    const bytes = Buffer.from(encryptedImportMeta, 'base64');
-    bytes[0] ^= 0x01;
-    const tampered = bytes.toString('base64');
-
-    const error = await openImportMeta(tampered, importMetaIv, GROUP_ID).catch((e: unknown) => e);
-    // A tamper signal. `null` is reserved for "authenticated, but not a v1
-    // envelope", and conflating the two would hide a forged envelope.
-    expect(error).toBeInstanceOf(ImportMetaAuthError);
-    expect(classifyImportCryptoError(error)).toBe('terminal-for-run');
-  });
-
-  it('raises ImportMetaAuthError on a truncated or unparseable envelope', async () => {
-    await expect(openImportMeta('AAAA', 'AAAAAAAAAAAAAAAA', GROUP_ID)).rejects.toThrow(
-      ImportMetaAuthError,
-    );
-  });
-
-  it('returns null for ciphertext that authenticates but is not a v1 envelope', async () => {
-    const { encryptContent } = jest.requireMock('../contentCrypto') as {
-      encryptContent: (p: string, k: Uint8Array, g: string) => { ciphertext: string; iv: string };
-    };
-    const sealed = encryptContent(JSON.stringify({ v: 2 }), key(0x42), GROUP_ID);
-
-    await expect(openImportMeta(sealed.ciphertext, sealed.iv, GROUP_ID)).resolves.toBeNull();
-  });
-
-  it.each([
-    ['a pending wrap', () => new PendingWrapError()],
-    ['an unopenable envelope', () => new GroupKeyUnwrapError('no_envelope', 'requested')],
-  ])('propagates %s from the group-key fetch unchanged', async (_label, makeError) => {
-    const thrown = makeError();
-    mockGetOrFetchGroupKey.mockRejectedValue(thrown);
-
-    const error = await openImportMeta('AAAA', 'AAAA', GROUP_ID).catch((e: unknown) => e);
-    expect(error).toBe(thrown);
-    expect(classifyImportCryptoError(error)).toBe('retryable-pause');
-  });
+  // The tamper, truncated-base64 and not-a-v1-envelope cases live with
+  // `openImportMetaWithKey` below: they are properties of OPENING an envelope,
+  // and that is the only opener now that the key-fetching wrapper is gone.
 });
 
 // ---------------------------------------------------------------------------
@@ -673,16 +633,12 @@ describe('openImportMetaWithKey', () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it('is what openImportMeta delegates to, with the fetched key', async () => {
+  it('passes the caller\'s key and the groupId straight through as the AAD', async () => {
     const { encryptedImportMeta, importMetaIv } = await seal();
     const spy = jest.spyOn(contentCryptoMock(), 'decryptContent');
-    mockGetOrFetchGroupKey.mockResolvedValue(GROUP_KEY);
 
-    await expect(openImportMeta(encryptedImportMeta, importMetaIv, GROUP_ID)).resolves.toEqual({
-      v: 1,
-      source: 'facebook',
-      originalCreatedAt: POST_DATE,
-    });
+    openImportMetaWithKey(encryptedImportMeta, importMetaIv, GROUP_KEY, GROUP_ID);
+
     expect(spy).toHaveBeenCalledWith(encryptedImportMeta, importMetaIv, GROUP_KEY, GROUP_ID);
   });
 });

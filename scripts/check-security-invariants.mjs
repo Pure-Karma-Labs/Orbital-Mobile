@@ -7161,29 +7161,28 @@ for (const file of miScanned) {
 //     written in the first place, and the only values in scope are ciphertext
 //     and a crypto failure reason. The catch body must also hold no log call.
 //
-// The helpers are OPTIONAL here on purpose. `threadHeadline.ts` and
-// `urlHost.ts` arrive with #927's UI half; this arm binds the moment either
-// file exists and is silent (not skipped) while it does not, so the rule can
-// land with the service half without failing the build. The anti-vacuity floor
-// for the read path is `resolveImportDisplay` itself, which is required BY
-// NAME below — if that function is renamed or deleted, this fails loudly.
+// Both helpers are REQUIRED, not optional: they exist, and a scan that passes
+// because a file is missing is a scan that stops binding the day someone
+// renames one. A deleted or moved helper is a violation naming the path, so
+// the rule has to be repointed in the same commit. The read path's other
+// anti-vacuity floor is `resolveImportDisplay`, required BY NAME below.
 
 const MI_READ_ISSUE = '#927';
 
-/** #927's pure display helpers. Checked only once they exist — see above. */
-const MI_READ_OPTIONAL_SILENT = [
+/** #927's pure display helpers. Required — see above. */
+const MI_READ_SILENT_FILES = [
   join(SRC, 'utils', 'threadHeadline.ts'),
   join(SRC, 'utils', 'urlHost.ts'),
 ];
 
-for (const file of MI_READ_OPTIONAL_SILENT) {
-  let raw;
-  try {
-    raw = readFileSync(file, 'utf8');
-  } catch {
-    // Not written yet (#927's UI half). Nothing to bind.
-    continue;
-  }
+for (const file of MI_READ_SILENT_FILES) {
+  const raw = meRead(
+    file,
+    MI_LOG_RULE,
+    'that this pure display helper logs nothing at all',
+    MI_READ_ISSUE,
+  );
+  if (raw === null) continue;
   const lines = meStripComments(raw).split('\n');
   for (let i = 0; i < lines.length; i++) {
     if (!ME_LOG_CALL_RE.test(lines[i])) continue;

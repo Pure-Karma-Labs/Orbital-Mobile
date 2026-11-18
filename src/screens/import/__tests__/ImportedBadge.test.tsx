@@ -52,6 +52,17 @@ describe('ImportedIndicator', () => {
     expect(image(render(<ImportedIndicator />)).props.style.width).toBeGreaterThan(0);
   });
 
+  it('lets the row position it without owning the layout', () => {
+    const renderer = render(<ImportedIndicator style={{ marginRight: 4 }} />);
+    const badge = renderer.root.findByProps({ testID: 'thread-imported-indicator' });
+    expect(badge.props.style).toEqual({ marginRight: 4 });
+    // And with no style at all, it adds none of its own.
+    const bare = render(<ImportedIndicator />);
+    expect(
+      bare.root.findByProps({ testID: 'thread-imported-indicator' }).props.style,
+    ).toBeUndefined();
+  });
+
   it('is not touchable', () => {
     const renderer = render(<ImportedIndicator />);
     expect(renderer.root.findAll((node) => typeof node.props.onPress === 'function')).toHaveLength(

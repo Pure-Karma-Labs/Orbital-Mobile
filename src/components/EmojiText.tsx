@@ -36,6 +36,17 @@ export interface EmojiTextProps {
   emojiScale?: number;
   /** Enable native text selection (long-press to select/copy). Defaults to false. */
   selectable?: boolean;
+  /**
+   * Render URLs as tappable links. Defaults to true.
+   *
+   * Pass `false` where the text is a SUMMARY of content rather than the
+   * content itself — a list row's derived headline (#927), say, whose whole
+   * surface already navigates into the thread. A link inside it would put a
+   * second, invisible tap target on top of the row's own, and tapping the row
+   * near it would leave the app instead of opening the thread. URL text still
+   * renders, as plain text.
+   */
+  linkify?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +76,7 @@ export const EmojiText = React.memo(function EmojiText({
   testID,
   emojiScale,
   selectable,
+  linkify = true,
 }: EmojiTextProps): React.JSX.Element {
   const theme = useTheme();
   const fontSize = StyleSheet.flatten(style)?.fontSize ?? DEFAULT_FONT_SIZE;
@@ -76,8 +88,13 @@ export const EmojiText = React.memo(function EmojiText({
 
   const segments = useMemo(() => findEmojiInText(children), [children]);
 
-  // If no emoji or links found, render as plain text for performance
-  const hasSpecialSegments = segments.some((s) => s.type === 'emoji' || s.type === 'link');
+  // If no emoji or links found, render as plain text for performance. With
+  // linkify off, a link segment is plain text too — so text that is nothing
+  // but a URL takes this fast path and renders byte-identically to the raw
+  // string.
+  const hasSpecialSegments = segments.some(
+    (s) => s.type === 'emoji' || (s.type === 'link' && linkify),
+  );
   if (!hasSpecialSegments) {
     return (
       <Text style={style} numberOfLines={numberOfLines} testID={testID} selectable={selectable}>
@@ -96,6 +113,11 @@ export const EmojiText = React.memo(function EmojiText({
         }
 
         if (segment.type === 'link') {
+          // No style, no onPress, no link role: indistinguishable from the
+          // surrounding text, and nothing a screen reader will offer to open.
+          if (!linkify) {
+            return <Text key={index}>{segment.value}</Text>;
+          }
           return (
             <Text
               key={index}

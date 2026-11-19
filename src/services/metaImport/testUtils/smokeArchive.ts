@@ -27,6 +27,7 @@ import {
   igFlatJsonText,
   igMediaUri,
   igFlatJsonPath,
+  mp4Head,
   type FbLayout,
   type FbPostSpec,
   type IgPostSpec,
@@ -149,42 +150,21 @@ export function buildPng(
 }
 
 // ---------------------------------------------------------------------------
-// Minimal JPEG bytes (just magic + noise — not a valid decoded image)
-// ---------------------------------------------------------------------------
-
-/** Returns bytes starting with JPEG SOI magic, padded with PRNG noise. */
-function buildJpegHead(prng: () => number, size = 256): Buffer {
-  const buf = Buffer.allocUnsafe(size);
-  buf[0] = 0xff;
-  buf[1] = 0xd8;
-  buf[2] = 0xff;
-  buf[3] = 0xe0;
-  for (let i = 4; i < size; i++) buf[i] = Math.floor(prng() * 256);
-  return buf;
-}
-
-// ---------------------------------------------------------------------------
 // Minimal MP4 bytes (ftyp box, giving held_video)
 // ---------------------------------------------------------------------------
 
-/** Returns bytes starting with an `ftyp isom` box, padded with PRNG noise. */
+/**
+ * Returns bytes starting with an `ftyp isom` box (from the single canonical
+ * `mp4Head()` in metaJson.ts — C3), padded with PRNG noise.
+ *
+ * Only the first 12 bytes come from `mp4Head()` so the PRNG sequence is
+ * unchanged from before the C3 migration (byte-identity preserved).
+ */
 function buildMp4Head(prng: () => number, size = 256): Buffer {
   const buf = Buffer.allocUnsafe(size);
-  // box size (32 bytes) big-endian
-  buf[0] = 0x00;
-  buf[1] = 0x00;
-  buf[2] = 0x00;
-  buf[3] = 0x20;
-  // 'ftyp'
-  buf[4] = 0x66;
-  buf[5] = 0x74;
-  buf[6] = 0x79;
-  buf[7] = 0x70;
-  // major brand 'isom'
-  buf[8] = 0x69;
-  buf[9] = 0x73;
-  buf[10] = 0x6f;
-  buf[11] = 0x6d;
+  const head = mp4Head(); // canonical definition from metaJson.ts
+  // Copy the magic bytes: box-size(4) + 'ftyp'(4) + 'isom'(4)
+  for (let i = 0; i < 12; i++) buf[i] = head[i];
   for (let i = 12; i < size; i++) buf[i] = Math.floor(prng() * 256);
   return buf;
 }
@@ -388,15 +368,17 @@ export interface SmokeArchiveOptions {
    */
   readonly largeImage?: boolean;
   /**
-   * Add a GPS-tagged JPEG to the first photo post's media. If `gpsJpgBytes`
-   * is provided those bytes are used as the entry content; otherwise a
-   * synthetic JPEG head with `exif_data` metadata in the JSON is emitted.
+   * Add a GPS-tagged JPEG to the first photo post's media.
+   * `gpsJpgBytes` MUST be provided when this is `true` (C2: the synthetic
+   * JPEG fallback was removed — a fixture that emitted undecodable noise was
+   * the only caller, and the CLI always passes the real fixture file).
    * Ignored when `textOnly` is true.
    */
   readonly gps?: boolean;
   /**
    * Raw bytes for the GPS fixture image (e.g. `fs.readFileSync(gpsSmallPath)`).
-   * Pass from the CLI to avoid importing `node:fs` here.
+   * Required when `gps` is `true`. Pass from the CLI to avoid importing
+   * `node:fs` here.
    */
   readonly gpsJpgBytes?: Uint8Array;
   /**
@@ -503,191 +485,184 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
     return i === 0 ? mojibakeEscape('Café 📸') : `Synthetic post ${i + 1}`;
   }
 
-  const entries: SmokeEntry[] = [];
+  // C2: gpsJpgBytes is required when gps is true (the synthetic-noise fallback
+  // was removed — it emitted undecodable bytes and the CLI always provides the
+  // real fixture).
+  if (gps && opts.gpsJpgBytes === undefined) {
+    throw new Error(
+      'buildSmokeEntries: gpsJpgBytes is required when gps is true (C2: synthetic fallback removed)',
+    );
+  }
 
-  if (source === 'fb') {
+  // ---------------------------------------------------------------------------
+  // C4: per-source context — one emitter, two descriptors.
+  //
+  // The FB and IG branches were ~85 near-identical lines. The descriptor holds
+  // only what differs between sources; the main loop runs once and calls the
+  // correct descriptor methods. Output is byte-identical to the pre-C4 code
+  // for any FB archive (A1 changed only IG single-media; A2 changed both).
+  // ---------------------------------------------------------------------------
+
+  /** Media item accumulated before the post spec is built. */
+  interface AccumMediaItem {
+    name: string;
+    ts: number;
+    withMetadata?: boolean;
+  }
+
+  /**
+   * Per-source context: encapsulates what differs between FB and IG without
+   * duplicating the PRNG/entry/timing logic.
+   */
+  interface SourceContext {
+    pushTextPost(ts: number, caption: string): void;
+    pushVideoPost(ts: number, caption: string, name: string): void;
+    /** items.length is known before this call (all media already pushed). */
+    pushPhotoPost(ts: number, caption: string, items: readonly AccumMediaItem[]): void;
+    jsonText(): string;
+    mediaUri(name: string): string;
+    jsonPath(index: number): string;
+  }
+
+  function makeFbContext(): SourceContext {
     const layout: FbLayout = 'activity';
     const posts: FbPostSpec[] = [];
-
-    for (let i = 0; i < totalPosts; i++) {
-      const ts = randTimestamp();
-      const isVideo = i < videoPosts;
-      const caption = postCaption(i); // A2
-
-      if (textOnly) {
+    return {
+      pushTextPost(ts, caption) {
         posts.push({ timestamp: ts, post: caption });
-        continue;
-      }
-
-      if (isVideo) {
-        const name = `smoke_video_${i + 1}.mp4`;
+      },
+      pushVideoPost(ts, caption, name) {
+        posts.push({ timestamp: ts, post: caption, media: [{ name }] });
+      },
+      pushPhotoPost(ts, caption, items) {
         posts.push({
           timestamp: ts,
           post: caption,
-          media: [{ name }],
-        });
-        const videoBytes = buildMp4Head(prng);
-        entries.push({
-          path: prefixed(`your_facebook_activity/posts/media/${name}`),
-          bytes: videoBytes,
-          modifiedMs: ts * 1000,
-        });
-      } else {
-        // Photo post
-        const photoIndex = i - videoPosts + 1;
-        const mediaSpecs: Array<{ name: string; withMetadata?: boolean }> = [];
-        const isFirstPhotoPost = i === videoPosts;
-
-        for (let j = 0; j < photosPerPost; j++) {
-          const name = `smoke_photo_${photoIndex}_${j + 1}.png`;
-          mediaSpecs.push({ name });
-          const pngBytes = buildPng(64, 64, prng);
-          entries.push({
-            path: prefixed(fbMediaUri(name, layout)),
-            bytes: pngBytes,
-            modifiedMs: ts * 1000,
-          });
-        }
-
-        // GPS photo on the first photo post: use withMetadata to inject
-        // exif_data lat/long into the JSON (via fbMediaMetadata in metaJson.ts).
-        if (gps && isFirstPhotoPost) {
-          const gpsName = `smoke_gps_${photoIndex}.jpg`;
-          mediaSpecs.push({ name: gpsName, withMetadata: true });
-          const gpsBytes: Uint8Array = opts.gpsJpgBytes ?? buildJpegHead(prng);
-          entries.push({
-            path: prefixed(fbMediaUri(gpsName, layout)),
-            bytes: gpsBytes,
-            modifiedMs: ts * 1000,
-          });
-        }
-
-        // Large PNG on the first photo post
-        if (largeImage && isFirstPhotoPost) {
-          const largeName = `smoke_large_${photoIndex}.png`;
-          mediaSpecs.push({ name: largeName });
-          const largePng = buildPng(2500, 1500, prng, 0);
-          entries.push({
-            path: prefixed(fbMediaUri(largeName, layout)),
-            bytes: largePng,
-            modifiedMs: ts * 1000,
-          });
-        }
-
-        posts.push({
-          timestamp: ts,
-          post: caption,
-          media: mediaSpecs.map((m) => ({
+          media: items.map((m) => ({
             name: m.name,
-            ...(m.withMetadata === true
-              ? { withMetadata: true as const }
-              : {}),
+            ...(m.withMetadata === true ? { withMetadata: true as const } : {}),
           })),
         });
-      }
-    }
+      },
+      jsonText() { return fbJsonText({ layout, posts }); },
+      mediaUri(name) { return fbMediaUri(name, layout); },
+      jsonPath(index) { return fbJsonPath(index, layout); },
+    };
+  }
 
-    // JSON file
-    const jsonText = fbJsonText({ layout, posts });
-    const jsonPath = prefixed(fbJsonPath(1, layout));
-    entries.unshift({
-      path: jsonPath,
-      bytes: Buffer.from(jsonText, 'utf8'),
-      modifiedMs: maxMs,
-    });
-  } else {
-    // Instagram
-    const igPosts: IgPostSpec[] = [];
-
-    for (let i = 0; i < totalPosts; i++) {
-      const ts = randTimestamp();
-      const isVideo = i < videoPosts;
-      const caption = postCaption(i); // A2
-
-      if (textOnly) {
-        igPosts.push({ creationTimestamp: ts, title: caption });
-        continue;
-      }
-
-      if (isVideo) {
-        const name = `smoke_video_${i + 1}.mp4`;
-        igPosts.push({
+  function makeIgContext(): SourceContext {
+    const posts: IgPostSpec[] = [];
+    return {
+      pushTextPost(ts, caption) {
+        posts.push({ creationTimestamp: ts, title: caption });
+      },
+      pushVideoPost(ts, caption, name) {
+        posts.push({
           creationTimestamp: ts,
           title: caption,
           media: [{ name, creationTimestamp: ts }],
         });
-        const videoBytes = buildMp4Head(prng);
-        entries.push({
-          path: prefixed(igMediaUri(name)),
-          bytes: videoBytes,
-          modifiedMs: ts * 1000,
-        });
-      } else {
-        const photoIndex = i - videoPosts + 1;
-        const mediaSpecs: Array<{ name: string; creationTimestamp: number; withMetadata?: boolean }> = [];
-        const isFirstPhotoPost = i === videoPosts;
-
-        for (let j = 0; j < photosPerPost; j++) {
-          const name = `smoke_photo_${photoIndex}_${j + 1}.png`;
-          mediaSpecs.push({ name, creationTimestamp: ts });
-          const pngBytes = buildPng(64, 64, prng);
-          entries.push({
-            path: prefixed(igMediaUri(name)),
-            bytes: pngBytes,
-            modifiedMs: ts * 1000,
-          });
-        }
-
-        // GPS photo on the first photo post: withMetadata injects exif_data
-        // lat/long into the IG JSON (via igMediaMetadata in metaJson.ts).
-        if (gps && isFirstPhotoPost) {
-          const gpsName = `smoke_gps_${photoIndex}.jpg`;
-          mediaSpecs.push({ name: gpsName, creationTimestamp: ts, withMetadata: true });
-          const gpsBytes: Uint8Array = opts.gpsJpgBytes ?? buildJpegHead(prng);
-          entries.push({
-            path: prefixed(igMediaUri(gpsName)),
-            bytes: gpsBytes,
-            modifiedMs: ts * 1000,
-          });
-        }
-
-        // Large PNG on the first photo post
-        if (largeImage && isFirstPhotoPost) {
-          const largeName = `smoke_large_${photoIndex}.png`;
-          mediaSpecs.push({ name: largeName, creationTimestamp: ts });
-          const largePng = buildPng(2500, 1500, prng, 0);
-          entries.push({
-            path: prefixed(igMediaUri(largeName)),
-            bytes: largePng,
-            modifiedMs: ts * 1000,
-          });
-        }
-
+      },
+      pushPhotoPost(ts, caption, items) {
         // A1: a single-media IG post has no post-level creation_timestamp/title;
         // the parser falls back to media[0].creation_timestamp and
         // media[0].title (see instagramParser.ts header and scanMedia).
-        if (mediaSpecs.length === 1) {
-          igPosts.push({
-            media: [{ ...mediaSpecs[0], title: caption }],
+        if (items.length === 1) {
+          posts.push({
+            media: [{
+              name: items[0].name,
+              creationTimestamp: items[0].ts,
+              title: caption,
+              ...(items[0].withMetadata === true ? { withMetadata: true as const } : {}),
+            }],
           });
         } else {
-          igPosts.push({
+          posts.push({
             creationTimestamp: ts,
             title: caption,
-            media: mediaSpecs,
+            media: items.map((m) => ({
+              name: m.name,
+              creationTimestamp: m.ts,
+              ...(m.withMetadata === true ? { withMetadata: true as const } : {}),
+            })),
           });
         }
-      }
+      },
+      jsonText() { return igFlatJsonText({ posts }); },
+      mediaUri(name) { return igMediaUri(name); },
+      jsonPath(index) { return igFlatJsonPath(index); },
+    };
+  }
+
+  const ctx = source === 'fb' ? makeFbContext() : makeIgContext();
+  const entries: SmokeEntry[] = [];
+
+  for (let i = 0; i < totalPosts; i++) {
+    const ts = randTimestamp();
+    const isVideo = i < videoPosts;
+    const caption = postCaption(i);
+
+    if (textOnly) {
+      ctx.pushTextPost(ts, caption);
+      continue;
     }
 
-    const jsonText = igFlatJsonText({ posts: igPosts });
-    const jsonPath = prefixed(igFlatJsonPath(1));
-    entries.unshift({
-      path: jsonPath,
-      bytes: Buffer.from(jsonText, 'utf8'),
-      modifiedMs: maxMs,
-    });
+    if (isVideo) {
+      const name = `smoke_video_${i + 1}.mp4`;
+      entries.push({
+        path: prefixed(ctx.mediaUri(name)),
+        bytes: buildMp4Head(prng),
+        modifiedMs: ts * 1000,
+      });
+      ctx.pushVideoPost(ts, caption, name);
+    } else {
+      const photoIndex = i - videoPosts + 1;
+      const isFirstPhotoPost = i === videoPosts;
+      const accumItems: AccumMediaItem[] = [];
+
+      for (let j = 0; j < photosPerPost; j++) {
+        const name = `smoke_photo_${photoIndex}_${j + 1}.png`;
+        accumItems.push({ name, ts });
+        entries.push({
+          path: prefixed(ctx.mediaUri(name)),
+          bytes: buildPng(64, 64, prng),
+          modifiedMs: ts * 1000,
+        });
+      }
+
+      // GPS photo on the first photo post: withMetadata injects exif_data
+      // lat/long into the JSON (fbMediaMetadata / igMediaMetadata in metaJson.ts).
+      // C2: gpsJpgBytes required (checked above).
+      if (gps && isFirstPhotoPost) {
+        const gpsName = `smoke_gps_${photoIndex}.jpg`;
+        accumItems.push({ name: gpsName, ts, withMetadata: true });
+        entries.push({
+          path: prefixed(ctx.mediaUri(gpsName)),
+          bytes: opts.gpsJpgBytes as Uint8Array,
+          modifiedMs: ts * 1000,
+        });
+      }
+
+      // Large PNG on the first photo post.
+      if (largeImage && isFirstPhotoPost) {
+        const largeName = `smoke_large_${photoIndex}.png`;
+        accumItems.push({ name: largeName, ts });
+        entries.push({
+          path: prefixed(ctx.mediaUri(largeName)),
+          bytes: buildPng(2500, 1500, prng, 0),
+          modifiedMs: ts * 1000,
+        });
+      }
+
+      ctx.pushPhotoPost(ts, caption, accumItems);
+    }
   }
+
+  entries.unshift({
+    path: prefixed(ctx.jsonPath(1)),
+    bytes: Buffer.from(ctx.jsonText(), 'utf8'),
+    modifiedMs: maxMs,
+  });
 
   return entries;
 }

@@ -8,7 +8,7 @@
  *
  * ## Constraints
  *
- * - Imports ONLY `metaJson.ts` (sibling) and `node:zlib`.
+ * - Imports ONLY `metaJson.ts`, `mojibakeEscape.ts` (siblings) and `node:zlib`.
  * - `/// <reference types="node" />` for Node type resolution without
  *   `@types/node` in the `types` tsconfig field.
  * - NO `node:crypto` (invariant 30). CRC comes from `zlib.crc32`; the PRNG is
@@ -31,6 +31,7 @@ import {
   type FbPostSpec,
   type IgPostSpec,
 } from './metaJson.ts';
+import { mojibakeEscape } from './mojibakeEscape.ts';
 
 // ---------------------------------------------------------------------------
 // PRNG — Mulberry32 (seed-only, no Date.now() or Math.random())
@@ -419,6 +420,14 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
     return wrapperDir !== undefined ? `${wrapperDir}/${p}` : p;
   }
 
+  /**
+   * A2: the post at index 0 carries a mojibake-escaped caption so the
+   * latin1→UTF-8 repair path in `mojibake.ts` is exercised on every archive.
+   */
+  function postCaption(i: number): string {
+    return i === 0 ? mojibakeEscape('Café 📸') : `Synthetic post ${i + 1}`;
+  }
+
   const entries: SmokeEntry[] = [];
 
   if (source === 'fb') {
@@ -428,9 +437,10 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
     for (let i = 0; i < totalPosts; i++) {
       const ts = randTimestamp();
       const isVideo = i < videoPosts;
+      const caption = postCaption(i); // A2
 
       if (textOnly) {
-        posts.push({ timestamp: ts, post: `Synthetic post ${i + 1}` });
+        posts.push({ timestamp: ts, post: caption });
         continue;
       }
 
@@ -438,7 +448,7 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
         const name = `smoke_video_${i + 1}.mp4`;
         posts.push({
           timestamp: ts,
-          post: `Synthetic video post ${i + 1}`,
+          post: caption,
           media: [{ name }],
         });
         const videoBytes = buildMp4Head(prng);
@@ -491,7 +501,7 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
 
         posts.push({
           timestamp: ts,
-          post: `Synthetic post ${i + 1}`,
+          post: caption,
           media: mediaSpecs.map((m) => ({
             name: m.name,
             ...(m.withMetadata === true
@@ -517,9 +527,10 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
     for (let i = 0; i < totalPosts; i++) {
       const ts = randTimestamp();
       const isVideo = i < videoPosts;
+      const caption = postCaption(i); // A2
 
       if (textOnly) {
-        igPosts.push({ creationTimestamp: ts, title: `Synthetic post ${i + 1}` });
+        igPosts.push({ creationTimestamp: ts, title: caption });
         continue;
       }
 
@@ -527,7 +538,7 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
         const name = `smoke_video_${i + 1}.mp4`;
         igPosts.push({
           creationTimestamp: ts,
-          title: `Synthetic video post ${i + 1}`,
+          title: caption,
           media: [{ name, creationTimestamp: ts }],
         });
         const videoBytes = buildMp4Head(prng);
@@ -577,11 +588,20 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
           });
         }
 
-        igPosts.push({
-          creationTimestamp: ts,
-          title: `Synthetic post ${i + 1}`,
-          media: mediaSpecs,
-        });
+        // A1: a single-media IG post has no post-level creation_timestamp/title;
+        // the parser falls back to media[0].creation_timestamp and
+        // media[0].title (see instagramParser.ts header and scanMedia).
+        if (mediaSpecs.length === 1) {
+          igPosts.push({
+            media: [{ ...mediaSpecs[0], title: caption }],
+          });
+        } else {
+          igPosts.push({
+            creationTimestamp: ts,
+            title: caption,
+            media: mediaSpecs,
+          });
+        }
       }
     }
 

@@ -22,7 +22,7 @@ import { parseArchive } from '../parseArchive';
 
 import type { EntrySpec } from '../testUtils/builders';
 import type { ArchiveImportSession } from '../archiveAccess';
-import type { ParsedItem, ParseSummary } from '../types';
+import type { ParsedItem, ParsedPost, ParseSummary } from '../types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -390,5 +390,48 @@ describe('buildSmokeEntries — regular photos are valid PNGs', () => {
         expect(Buffer.compare(Buffer.from(photos[i].bytes), Buffer.from(photos[j].bytes))).not.toBe(0);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A1 — Instagram single-media post shape
+// ---------------------------------------------------------------------------
+
+describe('buildSmokeEntries — IG single-media shape (A1)', () => {
+  it('single-media IG posts parse without post-level timestamp/title', async () => {
+    // photosPerPost=1 produces single-media posts for all photo entries.
+    const entries = buildSmokeEntries({ source: 'ig', posts: 3, photosPerPost: 1, seed: 3 });
+    const { summary } = await runParse(entries, 'instagram');
+    // All 3 should be importable — date and caption come from media[0].
+    expect(summary.importable).toBe(3);
+  });
+
+  it('carousel IG posts (photosPerPost>1) remain importable', async () => {
+    const entries = buildSmokeEntries({ source: 'ig', posts: 2, photosPerPost: 3, seed: 4 });
+    const { summary } = await runParse(entries, 'instagram');
+    expect(summary.importable).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A2 — Mojibake caption repair round-trip
+// ---------------------------------------------------------------------------
+
+describe('buildSmokeEntries — mojibake caption repair (A2)', () => {
+  it('FB: first post caption is repaired through parseArchive', async () => {
+    const entries = buildSmokeEntries({ source: 'fb', posts: 1, seed: 1 });
+    const { items } = await runParse(entries, 'facebook');
+    const post = items.find((item) => item.outcome === 'import') as ParsedPost | undefined;
+    expect(post).not.toBeUndefined();
+    // 'Café 📸' — the mojibakeEscape round-trip must land here.
+    expect(post!.body).toBe('Café 📸');
+  });
+
+  it('IG: first single-media post caption (on media[0].title) is repaired', async () => {
+    const entries = buildSmokeEntries({ source: 'ig', posts: 1, photosPerPost: 1, seed: 1 });
+    const { items } = await runParse(entries, 'instagram');
+    const post = items.find((item) => item.outcome === 'import') as ParsedPost | undefined;
+    expect(post).not.toBeUndefined();
+    expect(post!.body).toBe('Café 📸');
   });
 });

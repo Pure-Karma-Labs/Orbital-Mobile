@@ -19,7 +19,7 @@ import { parseArchive } from '../parseArchive';
 
 import type { EntrySpec } from '../testUtils/builders';
 import type { ArchiveImportSession } from '../archiveAccess';
-import type { ParsedItem } from '../types';
+import type { ParsedItem, ParseSummary } from '../types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,11 +66,16 @@ function smokeEntriesToSpecs(entries: readonly SmokeEntry[]): EntrySpec[] {
   });
 }
 
+interface ParseResult {
+  items: ParsedItem[];
+  summary: ParseSummary;
+}
+
 /** Run parseArchive over a built archive. Returns all emitted items + summary. */
 async function runParse(
   entries: readonly SmokeEntry[],
   source: 'facebook' | 'instagram',
-): Promise<{ items: ParsedItem[]; summary: ReturnType<typeof parseArchive extends (...a: any[]) => Promise<infer R> ? (...a: any[]) => Promise<R> : never> extends Promise<infer S> ? S : never }> {
+): Promise<ParseResult> {
   const specs = smokeEntriesToSpecs(entries);
   const session: ArchiveImportSession = await buildArchive(specs).open();
   const items: ParsedItem[] = [];

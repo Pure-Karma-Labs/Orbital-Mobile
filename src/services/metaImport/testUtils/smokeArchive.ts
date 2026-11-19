@@ -30,7 +30,7 @@ import {
   type FbLayout,
   type FbPostSpec,
   type IgPostSpec,
-} from './metaJson';
+} from './metaJson.ts';
 
 // ---------------------------------------------------------------------------
 // PRNG — Mulberry32 (seed-only, no Date.now() or Math.random())

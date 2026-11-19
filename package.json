@@ -37,6 +37,7 @@
     "test:firebase-spm": "bash scripts/test-verify-firebase-spm.sh",
     "test:rust-gate:android": "bash scripts/test-rust-profile-gate-android.sh",
     "test:rust-gate:ios": "bash scripts/test-rust-profile-gate-ios.sh",
+    "smoke:meta-archive": "node --experimental-strip-types scripts/smoke/make-meta-archive.mjs",
     "postinstall": "patch-package --error-on-fail --error-on-warn"
   },
   "dependencies": {

@@ -52,6 +52,9 @@ const ITEM_KEYS = {
   BUNDLE_UPLOADED: 'bundleUploaded',
 } as const;
 
+// The /v1/keys/bundle body this sizes (~232 KB at 100) must stay under the
+// backend's 1 MB global JSON limit (Orbital-Backend src/middleware/bodyParsing.js);
+// at ~2.2 KB per Kyber1024 prekey it would cross that at roughly 400 prekeys.
 const PRE_KEY_BATCH_SIZE = 100;
 const REPLENISHMENT_THRESHOLD = 20;
 const SIGNED_PRE_KEY_ROTATION_SECONDS = 7 * 24 * 60 * 60;

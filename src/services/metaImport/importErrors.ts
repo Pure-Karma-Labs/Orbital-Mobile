@@ -332,7 +332,9 @@ export function isImportCancellation(e: unknown): boolean {
 }
 
 /**
- * A BARE 413 — the app-wide `express.json({limit:'10mb'})` refusing the body,
+ * A BARE 413 — the backend's JSON body parser refusing the body (since B#355
+ * the batch route parses in-router after `authenticate` with a 10 MB limit;
+ * the other import POSTs 100 KB; everything else under /api and /v1 1 MB),
  * which on a batch path means "halve", not "the orbit is full".
  *
  * Named rather than inlined because the distinction is invisible at the call

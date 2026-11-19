@@ -143,8 +143,9 @@ export function getImportSession(importId: string): Promise<ImportSessionRespons
  * `results` comes back dense and index-aligned with `items`: a malformed item
  * is `rejected` INSIDE the 200 and never fails the request. Only the envelope
  * can: an empty or over-size `items` is a 400 (`IMPORT_BATCH_TOO_LARGE`), and
- * a body over the app-wide 10 MB JSON limit is a bare 413 — both mean halve
- * the batch, neither is a per-item verdict.
+ * a body over the batch route's 10 MB JSON limit (parsed in-router after
+ * `authenticate` since B#355) is a bare 413 — both mean halve the batch,
+ * neither is a per-item verdict.
  *
  * The body goes through the client's camelCase→snake_case transform, so the
  * wire carries `import_key`, `original_created_at`, `encrypted_title`, … as

@@ -48,6 +48,7 @@ import {
   type FbPostSpec,
   type IgLabelledPostSpec,
 } from '../testUtils/builders';
+import { fakeDeriveImportKey } from '../testUtils/fakeImportKey';
 
 import type { ArchiveEntryKindOutcome, ArchiveImportSession } from '../archiveAccess';
 import type { ParseOptions, ParseProgress, ParseSummary, ParsedItem, ParsedPost } from '../types';
@@ -65,28 +66,6 @@ const TS = 1_600_000_000;
 
 /** Pinned so the UTC-day bound never depends on the machine running this. */
 const NOW_UTC_DAY = '2026-11-12';
-
-/**
- * A deterministic stand-in for #924's `hmacSha256(K_import, …)[0..16]`.
- *
- * Four independent FNV-1a lanes over the framed bytes: 16 bytes wide like the
- * real one, stable across runs, and distinct for distinct input — which is all
- * the dedup set needs. It is deliberately NOT a real MAC: this suite must not
- * depend on #924 having landed, and a parser that reached for crypto would be
- * the bug.
- */
-function fakeDeriveImportKey(sourceItemId: Uint8Array): Promise<Uint8Array> {
-  const key = new Uint8Array(16);
-  for (let lane = 0; lane < 4; lane++) {
-    let hash = (0x811c9dc5 ^ Math.imul(lane, 0x9e3779b9)) >>> 0;
-    for (const byte of sourceItemId) {
-      hash = (hash ^ (byte + lane)) >>> 0;
-      hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    key.set([hash >>> 24, (hash >>> 16) & 0xff, (hash >>> 8) & 0xff, hash & 0xff], lane * 4);
-  }
-  return Promise.resolve(key);
-}
 
 interface RunResult {
   readonly items: readonly ParsedItem[];

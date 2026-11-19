@@ -9,15 +9,19 @@
  * checks).
  */
 
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
 import zlib from 'node:zlib';
 
-import { buildArchive } from '../testUtils/builders';
+import { buildArchive, JPEG_HEAD } from '../testUtils/builders';
 import {
+  KNOWN_ROOT_KEYS,
   buildSmokeEntries,
   buildPng,
   writeStoredZip,
   type SmokeEntry,
 } from '../testUtils/smokeArchive';
+import { fakeDeriveImportKey } from '../testUtils/fakeImportKey';
 import { parseArchive } from '../parseArchive';
 
 import type { EntrySpec } from '../testUtils/builders';
@@ -28,44 +32,27 @@ import type { ParsedItem, ParsedPost, ParseSummary } from '../types';
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Deterministic stand-in for #924's HMAC. FNV-1a over 4 lanes, 16 bytes. */
-function fakeDeriveKey(id: Uint8Array): Promise<Uint8Array> {
-  const key = new Uint8Array(16);
-  for (let lane = 0; lane < 4; lane++) {
-    let h = (0x811c9dc5 ^ Math.imul(lane, 0x9e3779b9)) >>> 0;
-    for (const byte of id) {
-      h = (h ^ (byte + lane)) >>> 0;
-      h = Math.imul(h, 0x01000193) >>> 0;
-    }
-    key.set([h >>> 24, (h >>> 16) & 0xff, (h >>> 8) & 0xff, h & 0xff], lane * 4);
-  }
-  return Promise.resolve(key);
-}
-
 /**
  * Convert SmokeEntry list to EntrySpecs that buildArchive can use.
  *
  * The generator produces real file bytes; the mock session only needs:
- * - JSON entries: UTF-8 text
- * - Media entries: a 128-byte head for sniffing
+ * - JSON entries: UTF-8 text (kind: 'json' required since no inference for text)
+ * - Media entries: a 128-byte head for sniffing; kind omitted so inferKind
+ *   determines it from the extension (D4 — avoids duplicating extension logic)
  */
 function smokeEntriesToSpecs(entries: readonly SmokeEntry[]): EntrySpec[] {
   return entries.map((e): EntrySpec => {
-    // Strip the wrapper dir if present (Rust would do this at parse time)
-    const path = e.path;
-    if (path.endsWith('.json')) {
+    const entryPath = e.path;
+    if (entryPath.endsWith('.json')) {
       return {
-        path,
+        path: entryPath,
         kind: 'json',
         text: Buffer.from(e.bytes).toString('utf8'),
       };
     }
-    const lower = path.toLowerCase();
-    const isVideo = lower.endsWith('.mp4') || lower.endsWith('.mov');
-    const kind = isVideo ? ('video' as const) : ('image' as const);
-    // Use the first 128 bytes as the head for the sniff
+    // Use the first 128 bytes as the head for magic-byte sniffing
     const head = new Uint8Array(e.bytes.buffer, e.bytes.byteOffset, Math.min(128, e.bytes.length));
-    return { path, kind, head };
+    return { path: entryPath, head };
   });
 }
 
@@ -85,7 +72,7 @@ async function runParse(
   const summary = await parseArchive(session, {
     source,
     nowUtcDay: '2026-11-19',
-    deriveImportKey: fakeDeriveKey,
+    deriveImportKey: fakeDeriveImportKey,
     async onItem(item) {
       items.push(item);
     },
@@ -106,46 +93,40 @@ interface CdEntry {
   name: string;
 }
 
-function readLE32(buf: Buffer, offset: number): number {
-  return buf.readUInt32LE(offset);
-}
-
-function readLE16(buf: Buffer, offset: number): number {
-  return buf.readUInt16LE(offset);
-}
-
 /**
  * Decode all central-directory entries from a STORED ZIP buffer.
  *
  * Locates the EOCD at the tail, then reads each CD record.
+ * Uses Buffer's own readUInt32LE/readUInt16LE directly — the pass-through
+ * helpers were removed (D — no-op wrappers add noise).
  */
 function readCentralDirectory(zip: Buffer): CdEntry[] {
   // Find EOCD signature (0x06054b50) scanning from the end
   const EOCD_SIG = 0x06054b50;
   let eocdOffset = -1;
   for (let i = zip.length - 22; i >= Math.max(0, zip.length - 65558); i--) {
-    if (readLE32(zip, i) === EOCD_SIG) {
+    if (zip.readUInt32LE(i) === EOCD_SIG) {
       eocdOffset = i;
       break;
     }
   }
   if (eocdOffset < 0) throw new Error('EOCD not found');
 
-  const cdSize = readLE32(zip, eocdOffset + 12);
-  const cdOffset = readLE32(zip, eocdOffset + 16);
+  const cdSize = zip.readUInt32LE(eocdOffset + 12);
+  const cdOffset = zip.readUInt32LE(eocdOffset + 16);
 
   const entries: CdEntry[] = [];
   let pos = cdOffset;
   const CD_SIG = 0x02014b50;
   while (pos < cdOffset + cdSize) {
-    if (readLE32(zip, pos) !== CD_SIG) break;
-    const crc = readLE32(zip, pos + 16);
-    const compSize = readLE32(zip, pos + 20);
-    const uncompSize = readLE32(zip, pos + 24);
-    const nameLen = readLE16(zip, pos + 28);
-    const extraLen = readLE16(zip, pos + 30);
-    const commentLen = readLE16(zip, pos + 32);
-    const lhOffset = readLE32(zip, pos + 42);
+    if (zip.readUInt32LE(pos) !== CD_SIG) break;
+    const crc = zip.readUInt32LE(pos + 16);
+    const compSize = zip.readUInt32LE(pos + 20);
+    const uncompSize = zip.readUInt32LE(pos + 24);
+    const nameLen = zip.readUInt16LE(pos + 28);
+    const extraLen = zip.readUInt16LE(pos + 30);
+    const commentLen = zip.readUInt16LE(pos + 32);
+    const lhOffset = zip.readUInt32LE(pos + 42);
     const name = zip.subarray(pos + 46, pos + 46 + nameLen).toString('utf8');
     entries.push({ crc, compSize, uncompSize, lhOffset, name });
     pos += 46 + nameLen + extraLen + commentLen;
@@ -156,21 +137,17 @@ function readCentralDirectory(zip: Buffer): CdEntry[] {
 /** Decode the local header at `lhOffset` and return CRC + sizes. */
 function readLocalHeader(zip: Buffer, lhOffset: number): { crc: number; compSize: number; uncompSize: number } {
   const LH_SIG = 0x04034b50;
-  if (readLE32(zip, lhOffset) !== LH_SIG) throw new Error(`bad LH sig at ${lhOffset}`);
+  if (zip.readUInt32LE(lhOffset) !== LH_SIG) throw new Error(`bad LH sig at ${lhOffset}`);
   return {
-    crc: readLE32(zip, lhOffset + 14),
-    compSize: readLE32(zip, lhOffset + 18),
-    uncompSize: readLE32(zip, lhOffset + 22),
+    crc: zip.readUInt32LE(lhOffset + 14),
+    compSize: zip.readUInt32LE(lhOffset + 18),
+    uncompSize: zip.readUInt32LE(lhOffset + 22),
   };
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
-beforeEach(() => {
-  jest.clearAllMocks();
-});
 
 describe('buildSmokeEntries — Facebook', () => {
   it('produces an importable count matching posts minus video posts', async () => {
@@ -194,12 +171,11 @@ describe('buildSmokeEntries — Facebook', () => {
     const { summary } = await runParse(entries, 'facebook');
     // All posts should be importable (no video, no bad timestamps)
     expect(summary.importable).toBe(10);
-    if (summary.earliestDate !== null) {
-      expect(summary.earliestDate).toBeGreaterThanOrEqual(Date.UTC(start, 0, 1));
-    }
-    if (summary.latestDate !== null) {
-      expect(summary.latestDate).toBeLessThanOrEqual(Date.UTC(end, 11, 31, 23, 59, 59));
-    }
+    // D1: assert bounds rather than silently skipping the checks when null
+    expect(summary.earliestDate).not.toBeNull();
+    expect(summary.latestDate).not.toBeNull();
+    expect(summary.earliestDate!).toBeGreaterThanOrEqual(Date.UTC(start, 0, 1));
+    expect(summary.latestDate!).toBeLessThanOrEqual(Date.UTC(end, 11, 31, 23, 59, 59));
   });
 });
 
@@ -394,6 +370,54 @@ describe('buildSmokeEntries — regular photos are valid PNGs', () => {
 });
 
 // ---------------------------------------------------------------------------
+// B4 — wrapperDir known-root-key guard
+// ---------------------------------------------------------------------------
+
+describe('buildSmokeEntries — wrapperDir guard (B4)', () => {
+  it('throws when wrapperDir is a known root key', () => {
+    // Pick any value from KNOWN_ROOT_KEYS — Rust would not strip it,
+    // causing the archive to appear empty to the parser.
+    const knownKey = KNOWN_ROOT_KEYS.values().next().value as string;
+    expect(() => buildSmokeEntries({ source: 'fb', posts: 1, wrapperDir: knownKey })).toThrow(
+      /known root key/,
+    );
+  });
+
+  it('accepts a custom wrapperDir that is not a known root key', () => {
+    // D3: previously this was not tested; a valid custom name must work without throwing
+    const entries = buildSmokeEntries({ source: 'fb', posts: 2, seed: 1, wrapperDir: 'my_export' });
+    expect(entries.length).toBeGreaterThan(0);
+    // Every path is prefixed with the custom wrapper
+    for (const e of entries) {
+      expect(e.path).toMatch(/^my_export\//);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D2 — GPS fixture round-trip
+// ---------------------------------------------------------------------------
+
+describe('buildSmokeEntries — GPS fixture (D2)', () => {
+  it('GPS photo entry uses provided gpsJpgBytes and parses as importable', async () => {
+    // Use JPEG_HEAD as the GPS fixture — the GPS metadata lives in the JSON,
+    // not in the image bytes, so any valid JPEG magic is sufficient.
+    const gpsJpgBytes = new Uint8Array(JPEG_HEAD);
+    const entries = buildSmokeEntries({ source: 'fb', posts: 2, seed: 1, gps: true, gpsJpgBytes });
+    const gpsPaths = entries.filter((e) => /smoke_gps_/.test(e.path));
+    expect(gpsPaths.length).toBe(1);
+    const { summary } = await runParse(entries, 'facebook');
+    expect(summary.importable).toBeGreaterThan(0);
+  });
+
+  it('throws when gps=true and gpsJpgBytes is not provided', () => {
+    expect(() => buildSmokeEntries({ source: 'fb', posts: 1, seed: 1, gps: true })).toThrow(
+      /gpsJpgBytes is required/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // A1 — Instagram single-media post shape
 // ---------------------------------------------------------------------------
 
@@ -433,5 +457,44 @@ describe('buildSmokeEntries — mojibake caption repair (A2)', () => {
     const post = items.find((item) => item.outcome === 'import') as ParsedPost | undefined;
     expect(post).not.toBeUndefined();
     expect(post!.body).toBe('Café 📸');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D6 — CLI smoke: make-meta-archive.mjs exits 0 and writes a valid ZIP
+// ---------------------------------------------------------------------------
+
+describe('make-meta-archive.mjs CLI (D6)', () => {
+  it('exits 0 and writes a non-empty ZIP for --source fb', () => {
+    const outPath = path.join(
+      process.env['TMPDIR'] ?? '/tmp',
+      `smoke-d6-fb-${Date.now()}.zip`,
+    );
+    const repo = path.resolve(__dirname, '../../../../');
+    const script = path.join(repo, 'scripts/smoke/make-meta-archive.mjs');
+    const result = spawnSync(
+      process.execPath,
+      ['--experimental-strip-types', script, '--source', 'fb', '--posts', '2', '--seed', '1', '--out', outPath],
+      { encoding: 'utf8', timeout: 30_000 },
+    );
+    expect(result.status).toBe(0);
+    // The CLI logs a sha256 line to stdout
+    expect(result.stdout).toMatch(/sha256:/);
+  });
+
+  it('exits 0 and writes a non-empty ZIP for --source ig', () => {
+    const outPath = path.join(
+      process.env['TMPDIR'] ?? '/tmp',
+      `smoke-d6-ig-${Date.now()}.zip`,
+    );
+    const repo = path.resolve(__dirname, '../../../../');
+    const script = path.join(repo, 'scripts/smoke/make-meta-archive.mjs');
+    const result = spawnSync(
+      process.execPath,
+      ['--experimental-strip-types', script, '--source', 'ig', '--posts', '2', '--seed', '1', '--out', outPath],
+      { encoding: 'utf8', timeout: 30_000 },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/sha256:/);
   });
 });

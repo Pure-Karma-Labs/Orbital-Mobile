@@ -299,6 +299,44 @@ export function writeStoredZip(entries: readonly ZipEntry[]): Buffer {
 }
 
 // ---------------------------------------------------------------------------
+// Known root-key guard (B4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirror of `allowlist.rs`'s `is_known_root_key` = ALLOWED_ROOTS ∪ DENIED_ROOTS.
+ *
+ * The Rust layer strips the first path segment only when it is NOT a known root
+ * key. If `wrapperDir` IS a known root key, the strip never fires: every path
+ * stays under a recognized root and the reader accepts zero posts from the
+ * wrapper layer, silently making the archive look empty. Reject such values
+ * early with a helpful message.
+ *
+ * Also exported so the CLI can validate `--wrapper-dir` without duplicating the
+ * list (B4).
+ */
+export const KNOWN_ROOT_KEYS: ReadonlySet<string> = new Set([
+  // ALLOWED_ROOTS from allowlist.rs
+  'your_facebook_activity',
+  'your_activity_across_facebook',
+  'your_instagram_activity',
+  'posts',
+  'media',
+  'content',
+  'photos_and_videos',
+  // DENIED_ROOTS from allowlist.rs
+  'messages',
+  'inbox',
+  'friends_and_followers',
+  'ads_information',
+  'security_and_login_information',
+  'personal_information',
+  'stories',
+  'reels',
+  'profile',
+  'other_content',
+]);
+
+// ---------------------------------------------------------------------------
 // Smoke archive options
 // ---------------------------------------------------------------------------
 
@@ -390,6 +428,16 @@ export interface SmokeEntry {
  * No `node:fs` or `node:crypto` calls — deterministic from the seed.
  */
 export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] {
+  // B4: reject wrapperDir values that are known root keys — Rust would not strip
+  // them and the archive would list zero posts (silently empty).
+  if (opts.wrapperDir !== undefined && KNOWN_ROOT_KEYS.has(opts.wrapperDir)) {
+    throw new Error(
+      `buildSmokeEntries: wrapperDir "${opts.wrapperDir}" is a known root key — ` +
+        `Rust will not strip it and the archive will appear empty. ` +
+        `Use a custom name such as "my_export" that is not in ALLOWED_ROOTS or DENIED_ROOTS.`,
+    );
+  }
+
   const source = opts.source ?? 'fb';
   const totalPosts = opts.posts ?? 3;
   const photosPerPost = opts.photosPerPost ?? 1;

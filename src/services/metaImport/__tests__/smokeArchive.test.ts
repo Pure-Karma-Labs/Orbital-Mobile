@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * Smoke archive generator tests (#930).
  *
@@ -7,6 +8,8 @@
  * is well-formed (local/central CRC and size equality, as `local.rs:99`
  * checks).
  */
+
+import zlib from 'node:zlib';
 
 import { buildArchive } from '../testUtils/builders';
 import {
@@ -279,8 +282,113 @@ describe('buildPng — large image', () => {
 
   it('large image is emitted in a smoke archive with largeImage=true', () => {
     const entries = buildSmokeEntries({ source: 'fb', posts: 2, largeImage: true, seed: 11 });
-    const largePngs = entries.filter((e) => e.path.endsWith('.png'));
+    // Regular photos are now smoke_photo_*.png; the large image is smoke_large_*.png
+    const largePngs = entries.filter((e) => /smoke_large_/.test(e.path));
     expect(largePngs.length).toBe(1);
     expect(largePngs[0].bytes.length).toBeGreaterThanOrEqual(10 * 1024 * 1024);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PNG verification helpers
+// ---------------------------------------------------------------------------
+
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+interface PngChunk {
+  type: string;
+  data: Buffer;
+  storedCrc: number;
+}
+
+/** Decode all chunks from a PNG buffer (after the 8-byte signature). */
+function parsePngChunks(png: Buffer): PngChunk[] {
+  let pos = 8; // skip signature
+  const chunks: PngChunk[] = [];
+  while (pos < png.length) {
+    const dataLen = png.readUInt32BE(pos);
+    const type = png.subarray(pos + 4, pos + 8).toString('ascii');
+    const data = Buffer.from(png.subarray(pos + 8, pos + 8 + dataLen));
+    const storedCrc = png.readUInt32BE(pos + 8 + dataLen);
+    chunks.push({ type, data, storedCrc });
+    pos += 12 + dataLen;
+  }
+  return chunks;
+}
+
+/** Compute CRC32 over (type_ascii + data), matching buildPng's pngChunk(). */
+function chunkCrc(type: string, data: Buffer): number {
+  const typeBuf = Buffer.from(type, 'ascii');
+  return zlib.crc32(data, zlib.crc32(typeBuf)) >>> 0;
+}
+
+describe('buildSmokeEntries — regular photos are valid PNGs', () => {
+  it('every smoke_photo entry has a valid PNG signature', () => {
+    const entries = buildSmokeEntries({ source: 'fb', posts: 4, photosPerPost: 2, videoPosts: 1, seed: 55 });
+    const photos = entries.filter((e) => /smoke_photo_/.test(e.path));
+    expect(photos.length).toBeGreaterThan(0);
+    for (const e of photos) {
+      const buf = Buffer.from(e.bytes);
+      expect(buf.subarray(0, 8).equals(PNG_SIG)).toBe(true);
+    }
+  });
+
+  it('every smoke_photo entry has IHDR with width=64, height=64, colorType=RGB', () => {
+    const entries = buildSmokeEntries({ source: 'ig', posts: 3, photosPerPost: 2, seed: 77 });
+    const photos = entries.filter((e) => /smoke_photo_/.test(e.path));
+    expect(photos.length).toBeGreaterThan(0);
+    for (const e of photos) {
+      const buf = Buffer.from(e.bytes);
+      const chunks = parsePngChunks(buf);
+      const ihdr = chunks.find((c) => c.type === 'IHDR');
+      expect(ihdr).toBeDefined();
+      if (!ihdr) continue;
+      expect(ihdr.data.readUInt32BE(0)).toBe(64);  // width
+      expect(ihdr.data.readUInt32BE(4)).toBe(64);  // height
+      expect(ihdr.data[8]).toBe(8);                 // bit depth
+      expect(ihdr.data[9]).toBe(2);                 // color type: RGB
+    }
+  });
+
+  it('every smoke_photo IDAT inflates to height*(1+width*3) bytes', () => {
+    const W = 64;
+    const H = 64;
+    const entries = buildSmokeEntries({ source: 'fb', posts: 3, photosPerPost: 1, seed: 88 });
+    const photos = entries.filter((e) => /smoke_photo_/.test(e.path));
+    expect(photos.length).toBeGreaterThan(0);
+    for (const e of photos) {
+      const buf = Buffer.from(e.bytes);
+      const chunks = parsePngChunks(buf);
+      const idatChunks = chunks.filter((c) => c.type === 'IDAT');
+      expect(idatChunks.length).toBeGreaterThan(0);
+      const compressed = Buffer.concat(idatChunks.map((c) => c.data));
+      const raw = zlib.inflateSync(compressed);
+      // Each row: 1 filter byte + W*3 RGB bytes
+      expect(raw.length).toBe(H * (1 + W * 3));
+    }
+  });
+
+  it('every chunk CRC in every smoke_photo matches the computed CRC', () => {
+    const entries = buildSmokeEntries({ source: 'fb', posts: 3, photosPerPost: 2, seed: 99 });
+    const photos = entries.filter((e) => /smoke_photo_/.test(e.path));
+    expect(photos.length).toBeGreaterThan(0);
+    for (const e of photos) {
+      const buf = Buffer.from(e.bytes);
+      const chunks = parsePngChunks(buf);
+      for (const chunk of chunks) {
+        expect(chunkCrc(chunk.type, chunk.data)).toBe(chunk.storedCrc);
+      }
+    }
+  });
+
+  it('no two smoke_photo byte arrays are identical', () => {
+    const entries = buildSmokeEntries({ source: 'fb', posts: 5, photosPerPost: 2, seed: 111 });
+    const photos = entries.filter((e) => /smoke_photo_/.test(e.path));
+    expect(photos.length).toBeGreaterThan(1);
+    for (let i = 0; i < photos.length; i++) {
+      for (let j = i + 1; j < photos.length; j++) {
+        expect(Buffer.compare(Buffer.from(photos[i].bytes), Buffer.from(photos[j].bytes))).not.toBe(0);
+      }
+    }
   });
 });

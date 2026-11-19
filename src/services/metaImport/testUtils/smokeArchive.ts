@@ -454,12 +454,12 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
         const isFirstPhotoPost = i === videoPosts;
 
         for (let j = 0; j < photosPerPost; j++) {
-          const name = `smoke_photo_${photoIndex}_${j + 1}.jpg`;
+          const name = `smoke_photo_${photoIndex}_${j + 1}.png`;
           mediaSpecs.push({ name });
-          const jpegBytes = buildJpegHead(prng);
+          const pngBytes = buildPng(64, 64, prng);
           entries.push({
             path: prefixed(fbMediaUri(name, layout)),
-            bytes: jpegBytes,
+            bytes: pngBytes,
             modifiedMs: ts * 1000,
           });
         }
@@ -542,12 +542,12 @@ export function buildSmokeEntries(opts: SmokeArchiveOptions = {}): SmokeEntry[] 
         const isFirstPhotoPost = i === videoPosts;
 
         for (let j = 0; j < photosPerPost; j++) {
-          const name = `smoke_photo_${photoIndex}_${j + 1}.jpg`;
+          const name = `smoke_photo_${photoIndex}_${j + 1}.png`;
           mediaSpecs.push({ name, creationTimestamp: ts });
-          const jpegBytes = buildJpegHead(prng);
+          const pngBytes = buildPng(64, 64, prng);
           entries.push({
             path: prefixed(igMediaUri(name)),
-            bytes: jpegBytes,
+            bytes: pngBytes,
             modifiedMs: ts * 1000,
           });
         }

@@ -33,12 +33,15 @@ import type {
   ArchiveEntry,
   ArchiveImportSession,
   ArchivePartToken,
+  EntryKind as _ArchiveEntryKind,
+  RustEntrySkipCode as _ArchiveSkipCode,
   UriResolution,
 } from '../archiveAccess';
 
 // Import the pure JSON functions for internal use by fbEntrySpecs /
 // igFlatEntrySpecs / igLabelledEntrySpecs.
 import {
+  JPEG_HEAD,
   IG_LABELLED_JSON_PATH,
   fbJsonPath,
   fbJsonText,
@@ -47,6 +50,7 @@ import {
   igFlatJsonText,
   igLabelledJsonText,
   igMediaUri,
+  mp4Head,
 } from './metaJson';
 
 import type {
@@ -54,12 +58,25 @@ import type {
   IgFlatFileSpec,
   IgLabelledFileSpec,
   IgMediaSpec,
+  MetaEntryKind,
+  MetaRustEntrySkipCode,
 } from './metaJson';
+
+// C5: two-way assignability check — if the crate adds OR removes a skip code or
+// kind, one of these assignments becomes `never` and tsc fails. These
+// declarations are purely type-level; the initialiser is unreachable.
+declare const _metaKindFwd: MetaEntryKind extends _ArchiveEntryKind ? true : never;
+declare const _metaKindBwd: _ArchiveEntryKind extends MetaEntryKind ? true : never;
+declare const _metaSkipFwd: MetaRustEntrySkipCode extends _ArchiveSkipCode ? true : never;
+declare const _metaSkipBwd: _ArchiveSkipCode extends MetaRustEntrySkipCode ? true : never;
 
 // Re-export all types and helpers so callers can import from builders.ts
 // unchanged. smokeArchive.ts and the CLI import from metaJson.ts directly to
 // stay free of the archiveAccess / __mocks__ dependency graph.
+// C3: JPEG_HEAD and mp4Head are now defined in metaJson.ts; re-exported here
+// so existing callers (archiveAccess.test.ts etc.) need no import changes.
 export {
+  JPEG_HEAD,
   IG_LABELLED_JSON_PATH,
   fbJsonPath,
   fbJsonText,
@@ -68,6 +85,7 @@ export {
   igFlatJsonText,
   igLabelledJsonText,
   igMediaUri,
+  mp4Head,
   type FbFileSpec,
   type FbLayout,
   type FbMediaSpec,
@@ -85,20 +103,8 @@ export {
 // ---------------------------------------------------------------------------
 //
 // The 128-byte heads `peekHead` returns and `sniffContentType` classifies.
-// Extracted from `archiveAccess.test.ts`, which now imports them from here:
-// one definition, so a sniff-table change cannot be half-adopted.
-
-/** JPEG SOI + first marker byte: what `sniffContentType` needs for image/jpeg. */
-export const JPEG_HEAD = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
-
-/** An `ftyp` box with major brand `isom`: video/mp4. */
-export function mp4Head(): Uint8Array {
-  const head = new Uint8Array(32);
-  head[3] = 32; // box size
-  head.set([0x66, 0x74, 0x79, 0x70], 4); // 'ftyp'
-  head.set([0x69, 0x73, 0x6f, 0x6d], 8); // 'isom'
-  return head;
-}
+// Canonical definitions live in metaJson.ts (C3); re-exported above.
+// svgHead and unknownHead remain here — they have no duplicate in smokeArchive.
 
 /** SVG: an image by extension, NOT an image by sniff — `image/svg+xml`. */
 export function svgHead(): Uint8Array {

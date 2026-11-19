@@ -29,8 +29,13 @@
 // EXACTLY so that builders.ts can re-export FbMediaSpec/IgMediaSpec unchanged
 // and TypeScript structural typing stays satisfied. If the crate adds a new
 // skip code, update BOTH this list AND the crate's RustEntrySkipCode.
+//
+// MetaEntryKind and MetaRustEntrySkipCode are exported so builders.ts can
+// assert two-way assignability with the archive-reader types (C5).
 
 type _EntryKind = 'json' | 'image' | 'video';
+/** C5: exported alias for the two-way drift check in builders.ts. */
+export type MetaEntryKind = _EntryKind;
 
 type _RustEntrySkipCode =
   | 'ENTRY_PATH_INVALID'
@@ -48,6 +53,29 @@ type _RustEntrySkipCode =
   | 'ENTRY_KIND_MISMATCH'
   | 'ENTRY_NOT_UTF8'
   | 'ENTRY_NOT_ALLOWLISTED';
+/** C5: exported alias for the two-way drift check in builders.ts. */
+export type MetaRustEntrySkipCode = _RustEntrySkipCode;
+
+// ---------------------------------------------------------------------------
+// Magic-byte heads (C3)
+// ---------------------------------------------------------------------------
+//
+// Canonical definitions live HERE — metaJson.ts is the dependency-free leaf
+// that both Jest (via builders.ts) and the Node --experimental-strip-types CLI
+// (via smokeArchive.ts) load. builders.ts re-exports them; smokeArchive.ts
+// imports them directly. ONE definition each, per the testUtils README rule.
+
+/** JPEG SOI + first marker byte: what sniffContentType needs for image/jpeg. */
+export const JPEG_HEAD: Uint8Array = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+
+/** An ftyp box with major brand isom: video/mp4. */
+export function mp4Head(): Uint8Array {
+  const head = new Uint8Array(32);
+  head[3] = 32; // box size
+  head.set([0x66, 0x74, 0x79, 0x70], 4); // 'ftyp'
+  head.set([0x69, 0x73, 0x6f, 0x6d], 8); // 'isom'
+  return head;
+}
 
 // ---------------------------------------------------------------------------
 // Facebook

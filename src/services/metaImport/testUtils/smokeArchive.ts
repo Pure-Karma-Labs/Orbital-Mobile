@@ -215,6 +215,10 @@ function writeLE16(buf: Buffer, offset: number, val: number): void {
  *
  * Local-header CRC + sizes equal central-directory values (no data
  * descriptors, no bit 3), so `local.rs:99` accepts every entry.
+ *
+ * C1: throws when the entry count exceeds the ZIP32 EOCD limit (0xffff) or
+ * when any local-header offset or the central-directory offset would overflow
+ * a 32-bit field. The generator does not implement Zip64.
  */
 export function writeStoredZip(entries: readonly ZipEntry[]): Buffer {
   const LH_SIG = 0x04034b50;
@@ -223,10 +227,17 @@ export function writeStoredZip(entries: readonly ZipEntry[]): Buffer {
   const METHOD_STORED = 0;
   const VERSION = 0x0014; // 2.0
 
+  // C1: ZIP32 limits.
+  if (entries.length > 0xffff) {
+    throw new Error(
+      `writeStoredZip: entry count ${entries.length} exceeds ZIP32 limit 0xffff (65535). ` +
+        `Zip64 is not implemented.`,
+    );
+  }
+
   // Accumulate parts: local headers + data, then central directory records.
   const parts: Buffer[] = [];
   const cdParts: Buffer[] = [];
-  const localOffsets: number[] = [];
   let offset = 0;
 
   for (const entry of entries) {
@@ -236,7 +247,16 @@ export function writeStoredZip(entries: readonly ZipEntry[]): Buffer {
     const size = data.length;
     const { time, date } = dosTime(entry.modifiedMs);
 
+    // C1: check that the local-header offset fits in 32 bits.
+    if (offset > 0xffffffff) {
+      throw new Error(
+        `writeStoredZip: local-header offset 0x${offset.toString(16)} exceeds ZIP32 limit 0xffffffff. ` +
+          `Zip64 is not implemented.`,
+      );
+    }
+
     // ----- Local file header (30 + name) -----
+    const lhOffset = offset; // C3: captured here, no localOffsets array needed
     const lh = Buffer.alloc(30 + nameBuf.length);
     writeLE32(lh, 0, LH_SIG);
     writeLE16(lh, 4, VERSION);    // version needed
@@ -251,7 +271,6 @@ export function writeStoredZip(entries: readonly ZipEntry[]): Buffer {
     writeLE16(lh, 28, 0);         // extra field length
     nameBuf.copy(lh, 30);
 
-    localOffsets.push(offset);
     parts.push(lh, data);
     offset += lh.length + data.length;
 
@@ -273,7 +292,7 @@ export function writeStoredZip(entries: readonly ZipEntry[]): Buffer {
     writeLE16(cd, 34, 0);         // disk number start
     writeLE16(cd, 36, 0);         // internal attributes
     writeLE32(cd, 38, 0);         // external attributes
-    writeLE32(cd, 42, localOffsets[localOffsets.length - 1]); // local header offset
+    writeLE32(cd, 42, lhOffset);  // local header offset
     nameBuf.copy(cd, 46);
 
     cdParts.push(cd);
@@ -283,6 +302,14 @@ export function writeStoredZip(entries: readonly ZipEntry[]): Buffer {
   const cdOffset = offset;
   const cdSize = cdBuf.length;
   const count = entries.length;
+
+  // C1: check that the central-directory offset fits in 32 bits.
+  if (cdOffset > 0xffffffff) {
+    throw new Error(
+      `writeStoredZip: central-directory offset 0x${cdOffset.toString(16)} exceeds ZIP32 limit 0xffffffff. ` +
+        `Zip64 is not implemented.`,
+    );
+  }
 
   // ----- End of central directory (22 bytes) -----
   const eocd = Buffer.alloc(22);

@@ -173,6 +173,84 @@ export function getThreadsForConversation(conversationId: string): Thread[] {
 }
 
 /**
+ * The most recent `limit` threads for a conversation — the PRE-NETWORK
+ * placeholder `hydrateThreadsFromLocal` paints before the list request lands
+ * (#923).
+ *
+ * WHY A `LIMIT` IS SAFE HERE AND NOWHERE ELSE. The file-level rule (and the
+ * one on {@link getThreadsForConversation}) forbids LIMIT/OFFSET/WHERE on
+ * these columns because rows written before #844 hold epoch SECONDS, so the
+ * raw SQL order is a hint rather than the mapped order: a seconds value is
+ * ~1000x smaller than a ms one, which puts every legacy row at the END of
+ * `ORDER BY created_at DESC`. A LIMIT therefore cuts exactly the rows that
+ * would sort last anyway — and in a read whose entire output is replaced by
+ * the server's own page a moment later. Nothing is reconciled, deleted or
+ * counted from this result; it exists so the screen is not blank.
+ *
+ * Any read that DECIDES something (pruning, reconciliation, export) must keep
+ * using the unbounded one and bound itself on the mapped ms value.
+ *
+ * Returns empty array if database is not initialized.
+ */
+export function getRecentThreadsForConversation(
+  conversationId: string,
+  limit: number,
+): Thread[] {
+  if (!isDatabaseInitialized()) return [];
+  // A non-positive or non-finite limit would otherwise become `LIMIT -1`
+  // (SQLite: no limit at all), silently restoring the unbounded read.
+  if (!Number.isFinite(limit) || limit <= 0) return [];
+
+  const rows = queryMany<ThreadRow>(
+    'SELECT * FROM orbital_threads WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?',
+    [conversationId, Math.floor(limit)],
+  );
+
+  return rows.map(mapRowToThread);
+}
+
+/**
+ * How many ids one `getThreadsByIds` statement binds.
+ *
+ * SQLite's compile-time `SQLITE_MAX_VARIABLE_NUMBER` is 999 on the older
+ * builds this app has shipped against; 200 keeps a wide margin and keeps each
+ * statement's string short enough to parse cheaply.
+ */
+const ID_CHUNK_SIZE = 200;
+
+/**
+ * Read a set of threads by id, in chunks (#923).
+ *
+ * Two callers, both batching a read that used to be per-row: the thread-list
+ * page pipeline's recency fallback (one query per page instead of one per row
+ * that is not already in the store) and the search path, which has to reach
+ * rows the entity map no longer holds after a trim.
+ *
+ * Ids are de-duplicated; unknown ids are simply absent from the result, which
+ * is never longer than `ids`. Order is NOT guaranteed — callers index the
+ * result by id.
+ */
+export function getThreadsByIds(ids: readonly string[]): Thread[] {
+  if (!isDatabaseInitialized()) return [];
+
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return [];
+
+  const out: Thread[] = [];
+  for (let i = 0; i < unique.length; i += ID_CHUNK_SIZE) {
+    const chunk = unique.slice(i, i + ID_CHUNK_SIZE);
+    const placeholders = chunk.map(() => '?').join(', ');
+    const rows = queryMany<ThreadRow>(
+      `SELECT * FROM orbital_threads WHERE id IN (${placeholders})`,
+      chunk,
+    );
+    for (const row of rows) out.push(mapRowToThread(row));
+  }
+
+  return out;
+}
+
+/**
  * Get a single thread by ID.
  * Returns null if not found or database is not initialized.
  */

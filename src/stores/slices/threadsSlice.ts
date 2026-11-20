@@ -64,6 +64,7 @@ export const createThreadsSlice: StateCreator<
   replyIdsByThread: {},
   activeThreadId: null,
   threadLastViewedAt: {},
+  threadListPaging: {},
 
   // Actions
   setThreads: (conversationId, threads, options) => {
@@ -88,6 +89,127 @@ export const createThreadsSlice: StateCreator<
       false,
       'threads/setThreads',
     );
+  },
+
+  /**
+   * Additive union (#923). See {@link ThreadsActions.mergeThreads}.
+   *
+   * Entities go through the SAME `resolveRecency` as `setThreads`, so a
+   * load-more page cannot lower a recency the never-lower rule protects, and
+   * `authoritativeRecency` still means what it means on the replace path.
+   *
+   * The returned count is the number of ids the LIST gained — not the number
+   * of entities written. A page that re-delivers rows the head already holds
+   * (the walk's first page overlaps the head by construction) returns 0, which
+   * is the signal a follow-up loop needs to stop.
+   */
+  mergeThreads: (conversationId, threads, options) => {
+    const authoritative = options?.authoritativeRecency === true;
+    const { threads: existingThreads, threadIdsByConversation } = get();
+    const updatedThreads = { ...existingThreads };
+    for (const t of threads) {
+      updatedThreads[t.id] = resolveRecency(t, existingThreads[t.id], authoritative);
+    }
+
+    const existingIds = threadIdsByConversation[conversationId] ?? [];
+    const listed = new Set(existingIds);
+    const newIds: string[] = [];
+    for (const t of threads) {
+      // `listed` is updated as we go: a page that repeats an id within itself
+      // must count once, not twice.
+      if (!listed.has(t.id)) {
+        listed.add(t.id);
+        newIds.push(t.id);
+      }
+    }
+
+    set(
+      {
+        threads: updatedThreads,
+        threadIdsByConversation:
+          newIds.length === 0
+            ? threadIdsByConversation
+            : {
+                ...threadIdsByConversation,
+                [conversationId]: [...existingIds, ...newIds],
+              },
+      },
+      false,
+      'threads/mergeThreads',
+    );
+
+    return newIds.length;
+  },
+
+  trimThreadsToHead: (conversationId, keepIds) => {
+    const { threads, threadIdsByConversation, activeThreadId } = get();
+    const ids = threadIdsByConversation[conversationId];
+    if (!ids || ids.length === 0) return;
+
+    const keep: ReadonlySet<string> =
+      keepIds instanceof Set ? keepIds : new Set(keepIds as readonly string[]);
+
+    const remaining: string[] = [];
+    const dropped: string[] = [];
+    for (const id of ids) {
+      if (
+        keep.has(id) ||
+        id === activeThreadId ||
+        threads[id]?.syncStatus === 'pending'
+      ) {
+        remaining.push(id);
+      } else {
+        dropped.push(id);
+      }
+    }
+    if (dropped.length === 0) return;
+
+    const updatedThreads = { ...threads };
+    for (const id of dropped) delete updatedThreads[id];
+
+    set(
+      {
+        threads: updatedThreads,
+        threadIdsByConversation: {
+          ...threadIdsByConversation,
+          [conversationId]: remaining,
+        },
+      },
+      false,
+      'threads/trimThreadsToHead',
+    );
+  },
+
+  cacheThreadEntities: (threads) => {
+    if (threads.length === 0) return;
+    const { threads: existingThreads } = get();
+    const updatedThreads = { ...existingThreads };
+    for (const t of threads) {
+      // Never-lower merge, like every non-service writer: a cached row is not
+      // a server answer about recency.
+      updatedThreads[t.id] = resolveRecency(t, existingThreads[t.id], false);
+    }
+    set({ threads: updatedThreads }, false, 'threads/cacheThreadEntities');
+  },
+
+  setThreadListPaging: (conversationId, state) => {
+    const { threadListPaging } = get();
+    if (state === null) {
+      if (threadListPaging[conversationId] === undefined) return;
+      const { [conversationId]: _dropped, ...remaining } = threadListPaging;
+      set({ threadListPaging: remaining }, false, 'threads/setThreadListPaging');
+      return;
+    }
+    set(
+      { threadListPaging: { ...threadListPaging, [conversationId]: state } },
+      false,
+      'threads/setThreadListPaging',
+    );
+  },
+
+  clearThreadListPaging: () => {
+    if (Object.keys(get().threadListPaging).length === 0) return;
+    set({ threadListPaging: {} }, false, 'threads/clearThreadListPaging');
   },
 
   upsertThread: (thread, options) => {

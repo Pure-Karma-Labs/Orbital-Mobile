@@ -746,3 +746,174 @@ describe('lastReplyAt authoritative writes (#897)', () => {
     expect(store.getState().threads['thread-1'].lastReplyAt).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #923 — additive paging
+// ---------------------------------------------------------------------------
+
+describe('threadsSlice — mergeThreads (#923)', () => {
+  it('appends new ids and returns the new-id count', () => {
+    const store = makeStore();
+    store.getState().setThreads('conv-1', [makeThread({ id: 'head-1', createdAt: 3000 })]);
+
+    const added = store.getState().mergeThreads('conv-1', [
+      makeThread({ id: 'head-1', createdAt: 3000 }),
+      makeThread({ id: 'tail-1', createdAt: 2000 }),
+      makeThread({ id: 'tail-2', createdAt: 1000 }),
+    ]);
+
+    expect(added).toBe(2);
+    expect(store.getState().threadIdsByConversation['conv-1']).toEqual([
+      'head-1',
+      'tail-1',
+      'tail-2',
+    ]);
+  });
+
+  it('counts an id repeated within one page once', () => {
+    const store = makeStore();
+
+    const added = store.getState().mergeThreads('conv-1', [
+      makeThread({ id: 'tail-1' }),
+      makeThread({ id: 'tail-1' }),
+    ]);
+
+    expect(added).toBe(1);
+    expect(store.getState().threadIdsByConversation['conv-1']).toEqual(['tail-1']);
+  });
+
+  it('returns 0 and keeps the id-array identity when a page adds nothing', () => {
+    const store = makeStore();
+    store.getState().setThreads('conv-1', [makeThread({ id: 'head-1' })]);
+    const idsBefore = store.getState().threadIdsByConversation;
+
+    const added = store.getState().mergeThreads('conv-1', [makeThread({ id: 'head-1' })]);
+
+    expect(added).toBe(0);
+    expect(store.getState().threadIdsByConversation).toBe(idsBefore);
+  });
+
+  it('never lowers recency by default, and lowers it authoritatively (#897)', () => {
+    const store = makeStore();
+    store.getState().setThreads('conv-1', [makeThread({ id: 'thread-1', lastReplyAt: 9000 })]);
+
+    store.getState().mergeThreads('conv-1', [makeThread({ id: 'thread-1', lastReplyAt: null })]);
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBe(9000);
+
+    store.getState().mergeThreads(
+      'conv-1',
+      [makeThread({ id: 'thread-1', lastReplyAt: null })],
+      { authoritativeRecency: true },
+    );
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBeNull();
+  });
+
+  it('leaves other conversations alone', () => {
+    const store = makeStore();
+    store.getState().setThreads('conv-2', [makeThread({ id: 'other-1', conversationId: 'conv-2' })]);
+
+    store.getState().mergeThreads('conv-1', [makeThread({ id: 'tail-1' })]);
+
+    expect(store.getState().threadIdsByConversation['conv-2']).toEqual(['other-1']);
+  });
+});
+
+describe('threadsSlice — trimThreadsToHead (#923)', () => {
+  it('drops walked ids and their entities, keeping the head page', () => {
+    const store = makeStore();
+    store.getState().setThreads('conv-1', [makeThread({ id: 'head-1' })]);
+    store.getState().mergeThreads('conv-1', [
+      makeThread({ id: 'tail-1' }),
+      makeThread({ id: 'tail-2' }),
+    ]);
+
+    store.getState().trimThreadsToHead('conv-1', ['head-1']);
+
+    expect(store.getState().threadIdsByConversation['conv-1']).toEqual(['head-1']);
+    expect('tail-1' in store.getState().threads).toBe(false);
+    expect('tail-2' in store.getState().threads).toBe(false);
+    expect(store.getState().threads['head-1']).toBeDefined();
+  });
+
+  it('keeps a pending row and the active thread even when they are not in keepIds', () => {
+    const store = makeStore();
+    store.getState().setThreads('conv-1', [makeThread({ id: 'head-1' })]);
+    store.getState().addOptimisticThread(makeThread({ id: 'optimistic-1' }));
+    store.getState().mergeThreads('conv-1', [
+      makeThread({ id: 'tail-1' }),
+      makeThread({ id: 'tail-open' }),
+    ]);
+    store.getState().setActiveThread('tail-open');
+
+    store.getState().trimThreadsToHead('conv-1', new Set(['head-1']));
+
+    const ids = store.getState().threadIdsByConversation['conv-1'];
+    expect(ids).toContain('head-1');
+    expect(ids).toContain('optimistic-1');
+    expect(ids).toContain('tail-open');
+    expect(ids).not.toContain('tail-1');
+  });
+
+  it('is a no-op for an unknown conversation', () => {
+    const store = makeStore();
+    const before = store.getState().threads;
+
+    store.getState().trimThreadsToHead('conv-unknown', ['anything']);
+
+    expect(store.getState().threads).toBe(before);
+  });
+});
+
+describe('threadsSlice — cacheThreadEntities (#923)', () => {
+  it('writes entities without listing them', () => {
+    const store = makeStore();
+    store.getState().setThreads('conv-1', [makeThread({ id: 'head-1' })]);
+
+    store.getState().cacheThreadEntities([makeThread({ id: 'searched-1', title: 'Found' })]);
+
+    expect(store.getState().threads['searched-1'].title).toBe('Found');
+    expect(store.getState().threadIdsByConversation['conv-1']).toEqual(['head-1']);
+  });
+
+  it('never lowers a stored recency', () => {
+    const store = makeStore();
+    store.getState().setThreads('conv-1', [makeThread({ id: 'thread-1', lastReplyAt: 9000 })]);
+
+    store.getState().cacheThreadEntities([makeThread({ id: 'thread-1', lastReplyAt: 10 })]);
+
+    expect(store.getState().threads['thread-1'].lastReplyAt).toBe(9000);
+  });
+});
+
+describe('threadsSlice — threadListPaging (#923)', () => {
+  const slot = {
+    hasMore: true,
+    loadingMore: false,
+    loadMoreFailed: false,
+    totalCount: 120,
+  };
+
+  it('starts empty', () => {
+    expect(makeStore().getState().threadListPaging).toEqual({});
+  });
+
+  it('writes and clears one conversation slot', () => {
+    const store = makeStore();
+
+    store.getState().setThreadListPaging('conv-1', slot);
+    expect(store.getState().threadListPaging['conv-1']).toBe(slot);
+
+    store.getState().setThreadListPaging('conv-1', null);
+    expect('conv-1' in store.getState().threadListPaging).toBe(false);
+  });
+
+  it('clears every slot at once', () => {
+    const store = makeStore();
+    store.getState().setThreadListPaging('conv-1', slot);
+    store.getState().setThreadListPaging('conv-2', slot);
+
+    store.getState().clearThreadListPaging();
+
+    expect(store.getState().threadListPaging).toEqual({});
+  });
+});

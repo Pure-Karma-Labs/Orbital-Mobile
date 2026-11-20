@@ -4,6 +4,8 @@ import {
   saveThread,
   saveThreadBatch,
   getThreadsForConversation,
+  getRecentThreadsForConversation,
+  getThreadsByIds,
   getThread,
   getConversationIdsWithThreads,
   deleteThread,
@@ -511,6 +513,147 @@ describe('threadRepository', () => {
         (c) => typeof c[0] === 'string' && (c[0] as string).includes('DELETE FROM orbital_threads'),
       ) as unknown as [string, unknown[]];
       expect(deleteCall).toBeDefined();
+    });
+  });
+
+  describe('getRecentThreadsForConversation (#923)', () => {
+    it('binds the conversation and the LIMIT, and keeps the created_at DESC order', () => {
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          return { rows: [row({ id: 'thread-1' })], rowsAffected: 0 };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const threads = getRecentThreadsForConversation('conv-1', 200);
+
+      const select = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+      expect(select[0]).toContain('ORDER BY created_at DESC');
+      expect(select[0]).toContain('LIMIT ?');
+      // No range predicate on the mixed-unit column (#844) — the LIMIT alone.
+      expect(select[0]).not.toContain('created_at >');
+      expect(select[0]).not.toContain('created_at <');
+      expect(select[1]).toEqual(['conv-1', 200]);
+      expect(threads).toHaveLength(1);
+      expect(threads[0].id).toBe('thread-1');
+    });
+
+    it('floors a fractional limit', () => {
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      getRecentThreadsForConversation('conv-1', 200.9);
+
+      const select = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+      expect(select[1]).toEqual(['conv-1', 200]);
+    });
+
+    it('queries nothing for a non-positive limit, rather than emitting LIMIT -1', () => {
+      // SQLite reads a negative LIMIT as "no limit": a silent fall back to the
+      // unbounded read is exactly what this function exists to avoid.
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      expect(getRecentThreadsForConversation('conv-1', 0)).toEqual([]);
+      expect(getRecentThreadsForConversation('conv-1', -5)).toEqual([]);
+      expect(getRecentThreadsForConversation('conv-1', Number.NaN)).toEqual([]);
+      expect(
+        exec.mock.calls.filter(
+          (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+        ),
+      ).toHaveLength(0);
+    });
+
+    it('maps a legacy epoch-SECONDS row through toMillis like the unbounded read', () => {
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          return {
+            rows: [row({ created_at: 1700000000, updated_at: 1700000000, last_reply_at: 1700000000 })],
+            rowsAffected: 0,
+          };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const threads = getRecentThreadsForConversation('conv-1', 200);
+
+      expect(threads[0].createdAt).toBe(1700000000000);
+      expect(threads[0].lastReplyAt).toBe(1700000000000);
+    });
+  });
+
+  describe('getThreadsByIds (#923)', () => {
+    it('binds one placeholder per id', () => {
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          return { rows: [row({ id: 'thread-1' }), row({ id: 'thread-2' })], rowsAffected: 0 };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const threads = getThreadsByIds(['thread-1', 'thread-2']);
+
+      const select = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+      expect(select[0]).toContain('WHERE id IN (?, ?)');
+      expect(select[1]).toEqual(['thread-1', 'thread-2']);
+      expect(threads.map((t) => t.id)).toEqual(['thread-1', 'thread-2']);
+    });
+
+    it('de-duplicates ids', () => {
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      getThreadsByIds(['thread-1', 'thread-1', 'thread-2']);
+
+      const select = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+      expect(select[1]).toEqual(['thread-1', 'thread-2']);
+    });
+
+    it('queries nothing for an empty id list', () => {
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      expect(getThreadsByIds([])).toEqual([]);
+      expect(
+        exec.mock.calls.filter(
+          (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+        ),
+      ).toHaveLength(0);
+    });
+
+    it('chunks a long id list into several statements and unions the rows', () => {
+      const ids = Array.from({ length: 450 }, (_, i) => `thread-${i}`);
+      let call = 0;
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          const id = `chunk-${call++}`;
+          return { rows: [row({ id })], rowsAffected: 0 };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const threads = getThreadsByIds(ids);
+
+      const selects = exec.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]][];
+      expect(selects).toHaveLength(3);
+      expect(selects[0][1]).toHaveLength(200);
+      expect(selects[1][1]).toHaveLength(200);
+      expect(selects[2][1]).toHaveLength(50);
+      expect(threads.map((t) => t.id)).toEqual(['chunk-0', 'chunk-1', 'chunk-2']);
     });
   });
 });

@@ -320,6 +320,24 @@ export type ConversationsSlice = ConversationsState & ConversationsActions;
 // Threads slice state
 // ============================================================
 
+/**
+ * What a list screen needs to render its paging footer (#923).
+ *
+ * The opaque cursor is deliberately NOT here: it encodes row identity, so it
+ * lives only in `threadListWalk`'s in-memory map, which is also the single
+ * writer of this record. `hasMore` is the walk's answer ("another page can be
+ * requested"), never a raw response field: an error leaves it true, and an
+ * exhausted or unsupported walk sets it false.
+ */
+export interface ThreadListPagingState {
+  hasMore: boolean;
+  loadingMore: boolean;
+  /** The last attempt failed (or was rate-limited): offer a tappable retry. */
+  loadMoreFailed: boolean;
+  /** The server's per-viewer total for the conversation, from the last page. */
+  totalCount: number;
+}
+
 export interface ThreadsState {
   threads: Record<string, Thread>;
   /** Maps conversationId -> ordered thread IDs */
@@ -330,6 +348,13 @@ export interface ThreadsState {
   activeThreadId: string | null;
   /** Epoch ms of when the user last viewed each thread (persisted for per-thread unread) */
   threadLastViewedAt: Record<string, number>;
+  /**
+   * Per-conversation paging state (#923). NOT persisted — see
+   * `partializeAppState`, which allowlists the persisted keys and does not
+   * include it: a walk is scoped to one viewing, and a restored `hasMore`
+   * would offer a page against a cursor that no longer exists in memory.
+   */
+  threadListPaging: Record<string, ThreadListPagingState>;
 }
 
 /**
@@ -354,6 +379,61 @@ export interface ThreadsActions {
     threads: Thread[],
     options?: ThreadRecencyWriteOptions,
   ) => void;
+  /**
+   * Union a page of threads into a conversation's list, additively (#923).
+   *
+   * The load-more counterpart of {@link ThreadsActions.setThreads}: entities
+   * are upserted through the same `resolveRecency` merge, and ids that are
+   * already listed keep their position while new ones are appended.
+   *
+   * Id-array position carries NO display meaning here — both list screens
+   * re-sort on every render — so appending is a set union with a stable
+   * iteration order, exactly as `appendReplies` is for replies (#821).
+   *
+   * @returns how many ids this call added to the list, so the caller can stop
+   * a follow-up loop that is no longer growing the list.
+   */
+  mergeThreads: (
+    conversationId: string,
+    threads: Thread[],
+    options?: ThreadRecencyWriteOptions,
+  ) => number;
+  /**
+   * Drop a conversation's walked tail, keeping `keepIds` (#923).
+   *
+   * Called when a list screen leaves a conversation: at most one orbit's and
+   * one DM's tail may stay in memory. `pending` rows (an optimistic post that
+   * has not been acked) and `activeThreadId` are kept regardless of
+   * `keepIds` — the first has no server row to re-fetch, the second is on
+   * screen. Entities of dropped ids go too; SQLite is untouched, so the rows
+   * come back on the next hydrate.
+   */
+  trimThreadsToHead: (
+    conversationId: string,
+    keepIds: ReadonlySet<string> | readonly string[],
+  ) => void;
+  /**
+   * Upsert thread ENTITIES without touching any conversation's id list (#923).
+   *
+   * For search results: a trim can drop a row's entity while its id is still
+   * reachable through FTS, and the result row needs the entity to render. It
+   * must not re-list the thread — that would resurrect a trimmed tail row in
+   * the list behind the search overlay.
+   */
+  cacheThreadEntities: (threads: Thread[]) => void;
+  /**
+   * Write (or clear, with `null`) one conversation's paging slot (#923).
+   *
+   * `threadListWalk` is the ONLY caller: the slot mirrors walk state that
+   * lives in that module's map, and a second writer would let the footer and
+   * the walk disagree.
+   */
+  setThreadListPaging: (
+    conversationId: string,
+    state: ThreadListPagingState | null,
+  ) => void;
+  /** Drop every paging slot in one write (local wipe / key recovery). */
+  clearThreadListPaging: () => void;
   upsertThread: (thread: Thread, options?: ThreadRecencyWriteOptions) => void;
   removeThread: (id: string) => void;
   setActiveThread: (id: string | null) => void;

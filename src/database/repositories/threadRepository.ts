@@ -159,6 +159,12 @@ function mapRowToThread(row: ThreadRow): Thread {
  * Do NOT add LIMIT/OFFSET or any WHERE on created_at here without normalising
  * the unit first.
  *
+ * NO production caller since #923 moved hydration to the bounded read — KEEP
+ * IT: the unbounded read is what a decision needs (pruning reconciles against
+ * every cached row, #923 PR B), and this docstring is where the no-LIMIT rule
+ * lives. Deleting it would leave only the bounded variant and invite the next
+ * caller to bound a read that must not be bounded.
+ *
  * Returns empty array if database is not initialized.
  */
 export function getThreadsForConversation(conversationId: string): Thread[] {

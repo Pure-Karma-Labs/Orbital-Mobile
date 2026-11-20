@@ -88,18 +88,35 @@ function groupByDay(sorted: readonly Thread[]): ListRow[] {
  * 1. **Unchanged** — same length, every element the same OBJECT. Returns the
  *    previous rows array, allocating nothing. This is the common re-render:
  *    the store replaced its `threads` map over rows this list does not hold.
- * 2. **Appended** — the previous input is a reference-prefix of the new one,
- *    which is exactly what a walked page produces (`mergeThreads` appends ids
- *    and leaves existing entities' identities alone). Sorts only the appended
- *    rows and MERGES them into the kept order. `compareThreadsByActivityDesc`
- *    is a strict total order on distinct ids (activity, then `createdAt`, then
- *    id), so the sorted permutation is unique and a merge of two sorted runs
- *    is byte-for-byte the array a full sort would have produced.
+ * 2. **Appended** — the previous input is a reference-prefix of the new one.
+ *    Sorts only the appended rows and MERGES them into the kept order.
+ *    `compareThreadsByActivityDesc` is a strict total order on distinct ids
+ *    (activity, then `createdAt`, then id), so the sorted permutation is
+ *    unique and a merge of two sorted runs is byte-for-byte the array a full
+ *    sort would have produced.
+ *
+ *    This is what walk pages 2..n produce: they are requested with an
+ *    exclusive `before` cursor, so every row is a new id, and `mergeThreads`
+ *    appends those ids while leaving the existing entities' identities alone.
+ *    The walk's FIRST page is cursorless and overlaps the head by
+ *    construction, and `fetchAndApplyThreadPage` maps every row in a page to a
+ *    fresh object — so that one page replaces identities mid-array and takes
+ *    path 3 instead. It is the cheapest rebuild there is (the list is still
+ *    head-sized), which is why this is left alone.
  * 3. **Otherwise** — a full rebuild, exactly as before. A reply landing in a
  *    walked list takes this path; it costs what it cost before this cache.
  *
  * Deliberately NOT keyed on the conversation id: the paths are content tests,
  * so a conversation switch simply falls through to a full rebuild.
+ *
+ * TWO THINGS THIS RELIES ON, neither of which it can check:
+ * - `Thread` objects are immutable once stored. Every path compares by
+ *   IDENTITY, so an in-place `thread.lastReplyAt = …` on a held object would
+ *   leave path 1 returning unchanged rows (no re-render at all) and path 2
+ *   merging against an order that is no longer sorted. The store is
+ *   copy-on-write throughout today.
+ * - The caller does not mutate the returned array: path 1 hands back the
+ *   cache's own `lastRows`. Both screens pass it straight to a FlatList.
  */
 export interface ThreadListRowsCache {
   (threads: readonly Thread[]): ListRow[];

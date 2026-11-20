@@ -11,8 +11,12 @@ const mockLoadConversations = jest.fn<Promise<void>, []>();
 const mockLoadDmConversations = jest.fn<Promise<void>, []>();
 const mockCaptureSession = jest.fn<{ userId: string; generation: number } | null, []>();
 const mockIsSessionStale = jest.fn<boolean, [{ userId: string; generation: number }]>();
-const mockLoadThreadsForGroup = jest.fn<Promise<unknown>, [string]>();
+const mockLoadThreadsForGroup = jest.fn<
+  Promise<unknown>,
+  [string, { tail?: 'keep' | 'drop' }?]
+>();
 const mockLoadThread = jest.fn<Promise<unknown>, [string]>();
+const mockLoadMoreThreadsForGroup = jest.fn<Promise<unknown>, [string]>();
 
 /**
  * Named so a test that temporarily replaces this module with a THROWING
@@ -31,8 +35,15 @@ const conversationServiceMock = () => ({
 jest.mock('../conversationService', () => conversationServiceMock());
 
 jest.mock('../threadService', () => ({
-  loadThreadsForGroup: (groupId: string) => mockLoadThreadsForGroup(groupId),
+  // The options object is forwarded, not dropped: #923 made it the difference
+  // between a block (merge, keep the walked tail) and an unblock (reopen).
+  loadThreadsForGroup: (groupId: string, options?: { tail?: 'keep' | 'drop' }) =>
+    mockLoadThreadsForGroup(groupId, options),
   loadThread: (threadId: string) => mockLoadThread(threadId),
+  // #923: a refresh re-pulls the HEAD page and nothing else. Walking further
+  // pages is the member's scroll, never a background refetch — so this is
+  // mocked only to be asserted NEVER called.
+  loadMoreThreadsForGroup: (groupId: string) => mockLoadMoreThreadsForGroup(groupId),
 }));
 
 const mockBlockUser = jest.fn<Promise<void>, [string, string]>();
@@ -127,8 +138,12 @@ describe('blockUserAndRefresh', () => {
     expect(mockLoadConversations).toHaveBeenCalledTimes(1);
     expect(mockLoadDmConversations).toHaveBeenCalledTimes(1);
     expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
-    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ACTIVE);
+    // A block MERGES (#923): the server just stops counting that author, so
+    // every row already paged in stays valid and the member keeps their place.
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ACTIVE, { tail: 'keep' });
     expect(mockLoadThread).not.toHaveBeenCalled();
+    // A background refresh never spends the member's page budget.
+    expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
   });
 
   it('refetches the viewed conversation as well when it differs from the active one', async () => {
@@ -137,8 +152,8 @@ describe('blockUserAndRefresh', () => {
     await loadModule().blockUserAndRefresh('bad-user', 'baduser');
 
     expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(2);
-    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ACTIVE);
-    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(VIEWING);
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ACTIVE, { tail: 'keep' });
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(VIEWING, { tail: 'keep' });
   });
 
   it("adds the open thread's conversation and the thread itself", async () => {
@@ -151,7 +166,7 @@ describe('blockUserAndRefresh', () => {
     await loadModule().blockUserAndRefresh('bad-user', 'baduser');
 
     expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(3);
-    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(THREAD_CONV);
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(THREAD_CONV, { tail: 'keep' });
     expect(mockLoadThread).toHaveBeenCalledWith(THREAD);
   });
 
@@ -165,7 +180,7 @@ describe('blockUserAndRefresh', () => {
     await loadModule().blockUserAndRefresh('bad-user', 'baduser');
 
     expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
-    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ACTIVE);
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ACTIVE, { tail: 'keep' });
   });
 
   it('skips the refetch when the session went stale while the block settled', async () => {
@@ -208,7 +223,12 @@ describe('unblockUserAndRefresh', () => {
     expect(mockRemoveMediaForAuthor).not.toHaveBeenCalled();
     expect(mockLoadConversations).toHaveBeenCalledTimes(1);
     expect(mockLoadDmConversations).toHaveBeenCalledTimes(1);
-    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ACTIVE);
+    // An unblock REOPENS (#923): the author's threads can come back ANYWHERE
+    // in the list, including inside the range this device already walked, and
+    // a merge can only append. Dropping the tail returns the list to its head,
+    // from where scrolling reaches them again.
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ACTIVE, { tail: 'drop' });
+    expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
   });
 });
 
@@ -232,6 +252,35 @@ describe('refreshBlockedContent single-flight', () => {
     expect(mockLoadConversations).toHaveBeenCalledTimes(2);
     expect(mockLoadDmConversations).toHaveBeenCalledTimes(2);
     expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-runs with 'drop' when an unblock folds into a block's run (#923)", async () => {
+    // 'drop' wins over 'keep' when runs coalesce: the unblock swallowed by the
+    // block's re-run must STILL reopen the list, or the unblocked author's
+    // threads stay stranded behind a tail this device walked while they were
+    // hidden.
+    const blockApi = deferred<void>();
+    mockBlockUser.mockReturnValue(blockApi.promise);
+    const firstRun = deferred<void>();
+    mockLoadConversations.mockReturnValueOnce(firstRun.promise);
+    const { blockUserAndRefresh, unblockUserAndRefresh } = loadModule();
+
+    const blocked = blockUserAndRefresh('bad-user', 'baduser');
+    blockApi.resolve(undefined);
+    await flush();
+
+    // The block's own run is in flight, and it kept the walked tail.
+    expect(mockLoadThreadsForGroup).toHaveBeenNthCalledWith(1, ACTIVE, { tail: 'keep' });
+
+    // The unblock arrives mid-run and is coalesced into the one re-run.
+    const unblocked = unblockUserAndRefresh('bad-user');
+    await flush();
+    firstRun.resolve(undefined);
+    await Promise.all([blocked, unblocked]);
+
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(2);
+    expect(mockLoadThreadsForGroup).toHaveBeenNthCalledWith(2, ACTIVE, { tail: 'drop' });
+    expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
   });
 
   it('resolves instead of rejecting when a lazy import fails (#906)', async () => {

@@ -89,6 +89,10 @@ jest.mock('../../threadService', () => ({
   getKnownThreadAuthorId: jest.fn(() => null),
   // #927: handleImportCompleted refetches the orbit's list.
   loadThreadsForGroup: jest.fn(() => Promise.resolve([])),
+  // #923: mocked only so the import_completed tests can pin it as NEVER
+  // called — a socket event must not spend the member's page budget behind
+  // their back.
+  loadMoreThreadsForGroup: jest.fn(),
 }));
 
 const mockMarkConversationReadEverywhere = jest.fn();
@@ -162,7 +166,7 @@ import {
 import { refreshAndCompareIdentityKey, compareAndPersistIdentityKey } from '../../crypto/identityKeyAccess';
 import { base64ToArrayBuffer } from '../../crypto/utils';
 import { submitWrappedKey } from '../../api/groups';
-import { decryptThreadFields, decryptReplyBody, applyReplyToParentThread, getKnownThreadAuthorId, loadThreadsForGroup } from '../../threadService';
+import { decryptThreadFields, decryptReplyBody, applyReplyToParentThread, getKnownThreadAuthorId, loadThreadsForGroup, loadMoreThreadsForGroup } from '../../threadService';
 import { useAppStore } from '../../../stores/useAppStore';
 import { saveThread as dbSaveThread } from '../../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply } from '../../../database/repositories/replyRepository';
@@ -2463,6 +2467,9 @@ describe('handleBroadcast — import_completed', () => {
   const mockLoadThreadsForGroup = loadThreadsForGroup as jest.MockedFunction<
     typeof loadThreadsForGroup
   >;
+  const mockLoadMoreThreadsForGroup = loadMoreThreadsForGroup as jest.MockedFunction<
+    typeof loadMoreThreadsForGroup
+  >;
   const ORBIT = testUUID('import-orbit');
 
   const orbitRow = {
@@ -2525,14 +2532,23 @@ describe('handleBroadcast — import_completed', () => {
   beforeEach(() => {
     mockLoadThreadsForGroup.mockClear();
     mockLoadThreadsForGroup.mockResolvedValue([]);
+    mockLoadMoreThreadsForGroup.mockClear();
     seed();
   });
 
-  it('refetches the orbit exactly once', async () => {
+  it('refetches the orbit exactly once, with no options — it MERGES', async () => {
     await handleServerMessage(message());
 
     expect(mockLoadThreadsForGroup).toHaveBeenCalledTimes(1);
+    // ANOTHER member's import, so the refetch merges rather than reopening
+    // (#923): the default `tail` keeps whatever this member has paged in, and
+    // their scroll position with it. Pinned as EXACTLY one argument — passing
+    // `{ tail: 'drop' }` here would yank the list back to its head under a
+    // member who is reading it.
     expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ORBIT);
+    expect(mockLoadThreadsForGroup.mock.calls[0]).toHaveLength(1);
+    // A socket event never spends the member's page budget on its own.
+    expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
   });
 
   it('has NO unread, badge, recency or notification side effects', async () => {

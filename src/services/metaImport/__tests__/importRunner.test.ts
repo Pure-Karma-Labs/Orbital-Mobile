@@ -271,8 +271,12 @@ jest.mock('../../conversationService', () => ({
 }));
 
 const mockLoadThreadsForGroup = jest.fn((..._a: unknown[]) => Promise.resolve([]));
+// #923: mocked only so the settle path can be pinned as NEVER calling it —
+// the refetch reopens the list, it does not walk pages on the member's behalf.
+const mockLoadMoreThreadsForGroup = jest.fn((..._a: unknown[]) => Promise.resolve([]));
 jest.mock('../../threadService', () => ({
   loadThreadsForGroup: (...a: unknown[]) => mockLoadThreadsForGroup(...a),
+  loadMoreThreadsForGroup: (...a: unknown[]) => mockLoadMoreThreadsForGroup(...a),
 }));
 
 const mockCaptureError = jest.fn();
@@ -2444,12 +2448,20 @@ describe('the server session', () => {
     expect(importStore.getState().summary?.errorCode).toBe('IMPORTS_UNAVAILABLE');
   });
 
-  it('refetches the orbit threads once the run completes', async () => {
+  it("refetches the orbit threads with tail: 'drop' once the run completes", async () => {
     seedJob({ items: 1 });
 
     await confirmAndRunLaunch();
 
-    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ORBIT);
+    // This path REOPENS the list (#923) because it is THIS DEVICE's own import
+    // settling: the imported rows land at their original dates, anywhere in
+    // the list rather than only at its head, and the member who started the
+    // run is sitting in Settings, not holding a scroll position worth
+    // preserving. Dropping the walked tail returns the list to its head, from
+    // where the new rows are reachable by scrolling. (Another member's import
+    // arrives over the socket and merges instead — see `messageHandler`.)
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith(ORBIT, { tail: 'drop' });
+    expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
   });
 
   it('asks peers to fulfil pending wraps without awaiting them', async () => {

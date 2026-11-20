@@ -1229,11 +1229,13 @@ async function fetchAndApplyThreadPage(
   // request is in flight makes the response's per-viewer values stale.
   const blockedGenerationBefore = getStoreActions().blockedUsersGeneration;
 
-  const response = await getGroupThreads(
-    groupId,
-    params,
-    options?.retryOn429 === false ? { retryOn429: false } : undefined,
-  );
+  // Two call shapes on purpose: a head refresh calls `getGroupThreads` with
+  // exactly the two arguments it always did, so its request is bit-identical
+  // to the pre-#923 one.
+  const response =
+    options?.retryOn429 === false
+      ? await getGroupThreads(groupId, params, { retryOn429: false })
+      : await getGroupThreads(groupId, params);
 
   // A malformed 200 must NOT read as "this orbit is empty" or "the list ends
   // here": the first would blank a list on a replace, the second would end a

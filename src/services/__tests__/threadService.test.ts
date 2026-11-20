@@ -1597,12 +1597,11 @@ describe('#883 loadThreadsForGroup', () => {
   });
 
   it('falls back to the SQLite row for the batch merge when the field is omitted', async () => {
-    // Seeded TWICE: on the cold-open path (no conversation row yet) the
-    // import carry-forward reads the same row before the recency merge does
-    // (#927), so a single `Once` would be consumed by the wrong caller.
-    mockDbGetThread
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    // TWO readers, two mocks (#923): the cold-open import carry-forward still
+    // reads one row at a time (`dbGetThread`), while the page's recency
+    // fallback is now ONE batched read for every row the store does not hold.
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetThreadsByIds.mockReturnValueOnce([makeStoredThread({ lastReplyAt: 7000 })]);
     mockGetGroupThreads.mockResolvedValue({
       // Explicitly omitted: the fixture default is `null`, which is now an
       // authoritative "no counted reply" rather than "not sent" (#897).
@@ -1618,12 +1617,11 @@ describe('#883 loadThreadsForGroup', () => {
   });
 
   it('lets an explicit null lower a batch value that exists only on disk (#897)', async () => {
-    // Seeded TWICE: on the cold-open path (no conversation row yet) the
-    // import carry-forward reads the same row before the recency merge does
-    // (#927), so a single `Once` would be consumed by the wrong caller.
-    mockDbGetThread
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    // TWO readers, two mocks (#923): the cold-open import carry-forward still
+    // reads one row at a time (`dbGetThread`), while the page's recency
+    // fallback is now ONE batched read for every row the store does not hold.
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetThreadsByIds.mockReturnValueOnce([makeStoredThread({ lastReplyAt: 7000 })]);
     mockGetGroupThreads.mockResolvedValue({
       threads: [makeThreadListItem({ lastReplyAt: null })],
       totalCount: 1,
@@ -1766,12 +1764,11 @@ describe('#906 blocked-set generation guard', () => {
   it('falls back to the never-lower merge when the generation changed and there is no live row', async () => {
     // Nothing live to keep, so the disk row is protected by the legacy path
     // and the refresh that bumped the generation supplies the real values.
-    // Seeded TWICE: on the cold-open path (no conversation row yet) the
-    // import carry-forward reads the same row before the recency merge does
-    // (#927), so a single `Once` would be consumed by the wrong caller.
-    mockDbGetThread
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    // TWO readers, two mocks (#923): the cold-open import carry-forward still
+    // reads one row at a time (`dbGetThread`), while the page's recency
+    // fallback is now ONE batched read for every row the store does not hold.
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetThreadsByIds.mockReturnValueOnce([makeStoredThread({ lastReplyAt: 7000 })]);
     mockGetGroupThreads.mockImplementationOnce(async () => {
       setStoreBlockedGeneration(1);
       return {

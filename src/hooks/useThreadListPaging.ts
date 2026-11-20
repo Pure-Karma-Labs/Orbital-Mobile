@@ -36,7 +36,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { ThreadListFooter } from '../components/ThreadListFooter';
+import { ThreadListFooter, type ThreadListFooterProps } from '../components/ThreadListFooter';
 import { useThreadListPagingState } from '../stores';
 import { leaveThreadList, loadMoreThreadsForGroup } from '../services/threadService';
 import type { LoadMoreResult } from '../services/threadListWalk';
@@ -112,7 +112,7 @@ export interface ThreadListPaging {
   /** Pass to `FlatList.onScrollBeginDrag` — opens the first-scroll gate. */
   onScrollBeginDrag: () => void;
   /** Pass to `ListFooterComponent`; `null` when there is nothing to show. */
-  footer: React.ReactElement | null;
+  footer: React.ReactElement<ThreadListFooterProps> | null;
   /** What the "Load more" row calls. Also usable by an empty-list branch. */
   retry: () => void;
   /** Another page can be requested (never cleared by a failure). */
@@ -316,7 +316,7 @@ export function useThreadListPaging(
   // the service layer has no way to know about.
   const stalled = !loading && (capped || paging.loadMoreFailed);
 
-  const footer = useMemo((): React.ReactElement | null => {
+  const footer = useMemo((): React.ReactElement<ThreadListFooterProps> | null => {
     if (disabled || !paging.hasMore) return null;
     if (!loading && !stalled) return null;
     // `createElement`, because this is a .ts hook module and the footer's JSX

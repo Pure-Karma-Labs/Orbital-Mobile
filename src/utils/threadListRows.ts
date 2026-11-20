@@ -39,8 +39,11 @@ export function buildListRows(threads: readonly Thread[]): ListRow[] {
     return [];
   }
 
-  const sorted = [...threads].sort(compareThreadsByActivityDesc);
+  return groupByDay([...threads].sort(compareThreadsByActivityDesc));
+}
 
+/** The day-grouping half, over an ALREADY sorted list. */
+function groupByDay(sorted: readonly Thread[]): ListRow[] {
   const rows: ListRow[] = [];
   let lastDayKey: string | null = null;
   let groupIndex = 0;
@@ -68,4 +71,89 @@ export function buildListRows(threads: readonly Thread[]): ListRow[] {
   }
 
   return rows;
+}
+
+/**
+ * A per-screen cache in front of {@link buildListRows} (#923 "Bounds").
+ *
+ * The benchmark (`scripts/bench/threadListPaging.bench.js`, desktop Hermes,
+ * a LOWER bound against a device) put one rebuild at 10,000 rows at ~80 ms,
+ * against a 50 ms budget — and 69 of those 80 ms are the `sort`, because
+ * Hermes runs a JS comparator ~20x slower than V8 does. Every write to the
+ * `threads` map produces a new array for this conversation, so without a cache
+ * a single arriving reply re-sorts the whole walked list.
+ *
+ * Three paths, in order:
+ *
+ * 1. **Unchanged** — same length, every element the same OBJECT. Returns the
+ *    previous rows array, allocating nothing. This is the common re-render:
+ *    the store replaced its `threads` map over rows this list does not hold.
+ * 2. **Appended** — the previous input is a reference-prefix of the new one,
+ *    which is exactly what a walked page produces (`mergeThreads` appends ids
+ *    and leaves existing entities' identities alone). Sorts only the appended
+ *    rows and MERGES them into the kept order. `compareThreadsByActivityDesc`
+ *    is a strict total order on distinct ids (activity, then `createdAt`, then
+ *    id), so the sorted permutation is unique and a merge of two sorted runs
+ *    is byte-for-byte the array a full sort would have produced.
+ * 3. **Otherwise** — a full rebuild, exactly as before. A reply landing in a
+ *    walked list takes this path; it costs what it cost before this cache.
+ *
+ * Deliberately NOT keyed on the conversation id: the paths are content tests,
+ * so a conversation switch simply falls through to a full rebuild.
+ */
+export interface ThreadListRowsCache {
+  (threads: readonly Thread[]): ListRow[];
+}
+
+export function createThreadListRowsCache(): ThreadListRowsCache {
+  let lastInput: readonly Thread[] = [];
+  let lastSorted: Thread[] = [];
+  let lastRows: ListRow[] = [];
+
+  return function rowsFor(threads: readonly Thread[]): ListRow[] {
+    if (threads.length === 0) {
+      lastInput = threads;
+      lastSorted = [];
+      lastRows = [];
+      return lastRows;
+    }
+
+    // Path 1 and path 2 share one scan: walk the previous input against the
+    // new one and stop at the first difference.
+    const prefixLength = Math.min(lastInput.length, threads.length);
+    let i = 0;
+    while (i < prefixLength && lastInput[i] === threads[i]) i++;
+
+    if (i === lastInput.length && i === threads.length) {
+      lastInput = threads;
+      return lastRows;
+    }
+
+    if (i === lastInput.length && i > 0) {
+      const appended = threads.slice(i).sort(compareThreadsByActivityDesc);
+      lastSorted = mergeSorted(lastSorted, appended);
+      lastRows = groupByDay(lastSorted);
+      lastInput = threads;
+      return lastRows;
+    }
+
+    lastSorted = [...threads].sort(compareThreadsByActivityDesc);
+    lastRows = groupByDay(lastSorted);
+    lastInput = threads;
+    return lastRows;
+  };
+}
+
+/** Merge two runs already in `compareThreadsByActivityDesc` order. */
+function mergeSorted(left: readonly Thread[], right: readonly Thread[]): Thread[] {
+  const out: Thread[] = new Array<Thread>(left.length + right.length);
+  let a = 0;
+  let b = 0;
+  let o = 0;
+  while (a < left.length && b < right.length) {
+    out[o++] = compareThreadsByActivityDesc(left[a], right[b]) <= 0 ? left[a++] : right[b++];
+  }
+  while (a < left.length) out[o++] = left[a++];
+  while (b < right.length) out[o++] = right[b++];
+  return out;
 }

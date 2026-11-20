@@ -48,13 +48,11 @@ import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { getThreadState } from '../utils/threadState';
-import { compareThreadsByActivityDesc, threadActivityAt } from '../utils/threadActivity';
+import { buildListRows, type ListRow } from '../utils/threadListRows';
 import {
-  formatDayLabel,
   formatImportDate,
   formatImportDateA11y,
   formatShortTime,
-  localDayKey,
 } from '../utils/formatPostTimestamp';
 import { NO_TITLE_FALLBACK, threadHeadline } from '../utils/threadHeadline';
 import { describeImportedLabel } from './import/importCopy';
@@ -67,59 +65,6 @@ export type ThreadsScreenProps = NativeStackScreenProps<
   ThreadsStackParamList,
   'ThreadsList'
 >;
-
-/** A row in the FlatList can be a thread, a day separator, or a section separator */
-type DaySeparatorRow = { type: 'day'; label: string; key: string };
-type SectionSeparatorRow = { type: 'section'; key: string };
-type ThreadRow = { type: 'thread'; thread: Thread; key: string };
-type ListRow = DaySeparatorRow | SectionSeparatorRow | ThreadRow;
-
-// ---------------------------------------------------------------------------
-// Build flat list rows from threads, grouping by day
-// ---------------------------------------------------------------------------
-
-function buildListRows(threads: Thread[]): ListRow[] {
-  if (threads.length === 0) {
-    return [];
-  }
-
-  // Sort by most recent activity (the newer of createdAt and lastReplyAt)
-  // descending. The shared comparator is total: it never returns NaN, it sorts
-  // a thread with no valid timestamp last, and it breaks ties on createdAt then
-  // id so the order is stable across re-sorts (#883).
-  const sorted = [...threads].sort(compareThreadsByActivityDesc);
-
-  const rows: ListRow[] = [];
-  let lastDayKey: string | null = null;
-  let groupIndex = 0;
-
-  for (const thread of sorted) {
-    // Group and label by activity, so the day headers agree with the row order.
-    // The row's own clock time still shows its creation time.
-    const activityTime = threadActivityAt(thread);
-    const dayKey = localDayKey(activityTime);
-    // An unrenderable timestamp has no day, so it opens no group and closes
-    // none: it joins whatever group it lands in. Letting '' through would both
-    // render a bare `───  ───` and split a real day in two, re-emitting its
-    // `day-<key>` (a duplicate FlatList key) and an extra section row.
-    if (dayKey !== '' && dayKey !== lastDayKey) {
-      // Insert section separator between day groups (not before first group)
-      if (lastDayKey !== null) {
-        rows.push({ type: 'section', key: `section-${groupIndex}` });
-        groupIndex++;
-      }
-      rows.push({
-        type: 'day',
-        label: formatDayLabel(activityTime),
-        key: `day-${dayKey}`,
-      });
-      lastDayKey = dayKey;
-    }
-    rows.push({ type: 'thread', thread, key: `thread-${thread.id}` });
-  }
-
-  return rows;
-}
 
 /**
  * What a screen reader says about an imported row (#927), folded into the

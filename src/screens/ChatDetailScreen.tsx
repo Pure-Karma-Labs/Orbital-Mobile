@@ -31,7 +31,7 @@ import {
 } from '../stores';
 import type { Thread } from '../types/store';
 import { getThreadState } from '../utils/threadState';
-import { compareThreadsByActivityDesc, threadActivityAt } from '../utils/threadActivity';
+import { buildListRows, type ListRow } from '../utils/threadListRows';
 import { VerifiedStatus } from '../types/database';
 import type { ChatsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
@@ -58,55 +58,12 @@ import { BlockedPeerNotice } from '../components/BlockedPeerNotice';
 import { useIsMuted } from '../hooks/useIsMuted';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { Emoji } from '../components/Emoji';
-import { formatDayLabel, formatShortTime, localDayKey } from '../utils/formatPostTimestamp';
+import { formatShortTime } from '../utils/formatPostTimestamp';
 
 export type ChatDetailScreenProps = NativeStackScreenProps<
   ChatsStackParamList,
   'ChatDetail'
 >;
-
-type DaySeparatorRow = { type: 'day'; label: string; key: string };
-type SectionSeparatorRow = { type: 'section'; key: string };
-type ThreadRow = { type: 'thread'; thread: Thread; key: string };
-type ListRow = DaySeparatorRow | SectionSeparatorRow | ThreadRow;
-
-function buildListRows(threads: Thread[]): ListRow[] {
-  if (threads.length === 0) return [];
-
-  // Most recent activity first: a reply on an old message brings it back to the
-  // top of the DM, matching what the Chats list now does with the conversation
-  // itself (#883). The comparator is total and never returns NaN.
-  const sorted = [...threads].sort(compareThreadsByActivityDesc);
-  const rows: ListRow[] = [];
-  let lastDayKey: string | null = null;
-  let groupIndex = 0;
-
-  for (const thread of sorted) {
-    // Group and label by activity, so the day headers agree with the order the
-    // rows are in. The row's own clock time still shows its creation time.
-    const activityTime = threadActivityAt(thread);
-    const dayKey = localDayKey(activityTime);
-    // An unrenderable timestamp has no day, so it opens no group and closes
-    // none: it joins whatever group it lands in. Letting '' through would both
-    // render a bare `───  ───` and split a real day in two, re-emitting its
-    // `day-<key>` (a duplicate FlatList key) and an extra section row.
-    if (dayKey !== '' && dayKey !== lastDayKey) {
-      if (lastDayKey !== null) {
-        rows.push({ type: 'section', key: `section-${groupIndex}` });
-        groupIndex++;
-      }
-      rows.push({
-        type: 'day',
-        label: formatDayLabel(activityTime),
-        key: `day-${dayKey}`,
-      });
-      lastDayKey = dayKey;
-    }
-    rows.push({ type: 'thread', thread, key: `thread-${thread.id}` });
-  }
-
-  return rows;
-}
 
 function EmptyState({ onCompose }: { onCompose: () => void }): React.JSX.Element {
   const theme = useTheme();

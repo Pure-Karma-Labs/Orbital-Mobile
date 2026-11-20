@@ -150,6 +150,7 @@ import { ThreadDetailScreen } from '../ThreadDetailScreen';
 import {
   ConflictError,
   NetworkError,
+  NotFoundError,
   QuotaExceededError,
   ServerError,
   ValidationError,
@@ -4091,5 +4092,140 @@ describe('ThreadDetailScreen — top-bar title', () => {
     const renderer = await renderScreen();
 
     expect(hasText(renderer, 'Test Thread')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A thread the server no longer has (#923)
+// ---------------------------------------------------------------------------
+
+/**
+ * Paging is what makes this routine: once a walk exists, a row the server
+ * removed stays listed on this device until the next open, so the tap that
+ * opens it is where the stale row has to reconcile itself.
+ */
+describe('ThreadDetailScreen — NotFound (#923)', () => {
+  const mockRemoveThread = jest.fn();
+
+  function seedStore(withThread: boolean): void {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      threads: withThread ? { 'thread-1': fakeThread } : {},
+      threadIdsByConversation: withThread ? { 'group-1': ['thread-1'] } : {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: withThread ? 'thread-1' : null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: mockRemoveThread,
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  }
+
+  beforeEach(() => {
+    mockRemoveThread.mockClear();
+    seedStore(false);
+  });
+
+  afterEach(() => {
+    const storesMock = jest.requireMock('../../stores') as { useThreads: jest.Mock };
+    storesMock.useThreads.mockReturnValue({
+      threads: {},
+      threadIdsByConversation: {},
+      replies: {},
+      replyIdsByThread: {},
+      activeThreadId: null,
+      setThreads: jest.fn(),
+      upsertThread: jest.fn(),
+      removeThread: jest.fn(),
+      setActiveThread: mockSetActiveThread,
+      markThreadViewed: jest.fn(),
+      setReplies: jest.fn(),
+      appendReplies: jest.fn(),
+      upsertReply: jest.fn(),
+      addOptimisticThread: jest.fn(),
+      addOptimisticReply: jest.fn(),
+      updateThreadSyncStatus: jest.fn(),
+      updateReplySyncStatus: jest.fn(),
+    });
+  });
+
+  it('removes the stale row and navigates back when the load 404s', async () => {
+    mockLoadThread.mockRejectedValueOnce(new NotFoundError());
+
+    const renderer = await renderScreen();
+
+    expect(mockRemoveThread).toHaveBeenCalledWith('thread-1');
+    expect(mockNavigation.goBack).toHaveBeenCalledTimes(1);
+    // ...and NOT the retry-inviting error copy: there is nothing to retry.
+    const texts = renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+    expect(texts).not.toContain('Could not load thread');
+  });
+
+  it('does not navigate back when the stack has nowhere to go', async () => {
+    mockLoadThread.mockRejectedValueOnce(new NotFoundError());
+    mockNavigation.canGoBack.mockReturnValueOnce(false);
+
+    await renderScreen();
+
+    expect(mockRemoveThread).toHaveBeenCalledWith('thread-1');
+    expect(mockNavigation.goBack).not.toHaveBeenCalled();
+  });
+
+  it('leaves every other failure on its existing path', async () => {
+    mockLoadThread.mockRejectedValueOnce(new NetworkError('offline'));
+
+    const renderer = await renderScreen();
+
+    expect(mockRemoveThread).not.toHaveBeenCalled();
+    expect(mockNavigation.goBack).not.toHaveBeenCalled();
+    const texts = renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+    expect(texts).toContain('Could not load thread');
+  });
+
+  it('a group-key failure is still a key verdict, not a removal', async () => {
+    const e = new Error('Group key not yet available (pending wrap)');
+    e.name = 'PendingWrapError';
+    mockLoadThread.mockRejectedValueOnce(e);
+
+    await renderScreen();
+
+    expect(mockRemoveThread).not.toHaveBeenCalled();
+    expect(mockNavigation.goBack).not.toHaveBeenCalled();
+  });
+
+  it('takes the same exit when a pull-to-refresh 404s', async () => {
+    seedStore(true);
+    mockLoadThread.mockResolvedValue(fakeThread);
+    mockLoadReplies.mockResolvedValue({ replies: [], newIdCount: 0, hasMore: false });
+    const renderer = await renderScreen();
+    expect(mockRemoveThread).not.toHaveBeenCalled();
+
+    mockLoadThread.mockRejectedValueOnce(new NotFoundError());
+    const list = renderer.root.findAll(
+      (n) => typeof n.type === 'string' && n.props.refreshControl != null,
+    );
+    expect(list.length).toBeGreaterThan(0);
+    await act(async () => {
+      await list[0].props.refreshControl.props.onRefresh();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockRemoveThread).toHaveBeenCalledWith('thread-1');
+    expect(mockNavigation.goBack).toHaveBeenCalled();
   });
 });

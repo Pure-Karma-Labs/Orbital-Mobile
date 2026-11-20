@@ -2022,25 +2022,27 @@ describe('ThreadsScreen — load more (#923)', () => {
     it('scrolls to the top on ENTERING search, and not on leaving it', async () => {
       const scrollSpy = jest.fn();
       const renderer = await render();
-      // The list instance the screen holds a ref to.
-      const instance = (
-        renderer.root.findAll(
-          (n) => typeof n.type !== 'string' && typeof n.props.data !== 'undefined',
-        )[0] as unknown as { instance: { scrollToOffset?: unknown } | null }
-      ).instance;
-      if (instance && typeof instance === 'object') {
-        (instance as { scrollToOffset: unknown }).scrollToOffset = scrollSpy;
-      }
+      // The instance `flatListRef` points at. NOT the outermost list node:
+      // `Animated.FlatList` is a forwardRef wrapper with no instance of its
+      // own, so stubbing that one stubs nothing and the case passes by
+      // default — which is exactly how it was written first.
+      const instance = renderer.root
+        .findAll((n) => typeof n.type !== 'string' && typeof n.props.data !== 'undefined')
+        .map((n) => (n as unknown as { instance: { scrollToOffset?: unknown } | null }).instance)
+        .find((i) => i != null && typeof i.scrollToOffset === 'function');
+      expect(instance).toBeDefined();
+      (instance as { scrollToOffset: unknown }).scrollToOffset = scrollSpy;
 
       mockSearchState = { ...mockSearchState, isSearching: true, resultThreadIds: ['thread-1'] };
       await rerender(renderer);
       const scrollsOnEnter = scrollSpy.mock.calls.length;
+      expect(scrollsOnEnter).toBeGreaterThan(0);
 
       mockSearchState = { ...mockSearchState, isSearching: false, resultThreadIds: [] };
       await rerender(renderer);
 
-      // Entering may scroll; LEAVING must not add one — a walked list's
-      // position survives the search overlay (#923).
+      // Entering scrolls; LEAVING must not add one — a walked list's position
+      // survives the search overlay (#923).
       expect(scrollSpy.mock.calls.length).toBe(scrollsOnEnter);
     });
   });

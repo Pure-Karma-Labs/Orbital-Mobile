@@ -370,12 +370,34 @@ describe('useThreadListPaging — an empty list that has more', () => {
     expect(mockLoadMore).toHaveBeenCalledWith('group-1');
   });
 
-  it('waits for a tap when the first-scroll gate is closed (a DM)', async () => {
+  it('offers a tap, and walks nothing, when the gate is closed (a DM)', async () => {
+    let h!: Harness;
     await act(async () => {
-      renderPaging({ renderedCount: 0, requireFirstScroll: true });
+      h = renderPaging({ renderedCount: 0, requireFirstScroll: true });
     });
 
+    // Nothing walks on its own — but an unscrollable list can never open the
+    // gate, so the member is left the one gesture that can: the row.
     expect(mockLoadMore).not.toHaveBeenCalled();
+    expect(h.result.current.stalled).toBe(true);
+    expect(h.result.current.footer?.props).toMatchObject({ loading: false, stalled: true });
+
+    mockLoadMore.mockResolvedValue(result({ newIdCount: 20 }));
+    await act(async () => {
+      h.result.current.footer?.props.onRetry();
+    });
+    expect(mockLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it('a gated end-reach on a NON-empty list stays silent (no row, no walk)', async () => {
+    // The content-size `onEndReached` the gate exists to swallow: arming the
+    // retry row here would put a "Load more" under every short DM.
+    const h = renderPaging({ renderedCount: 4, requireFirstScroll: true });
+    await endReach(h);
+
+    expect(mockLoadMore).not.toHaveBeenCalled();
+    expect(h.result.current.stalled).toBe(false);
+    expect(h.result.current.footer).toBeNull();
   });
 
   it('does not walk an empty list that is searching', async () => {
@@ -424,7 +446,10 @@ describe('useThreadListPaging — leaving a conversation', () => {
   it('does not touch state after an unmount mid-page', async () => {
     let release: (r: LoadMoreResult) => void = () => {};
     mockLoadMore.mockImplementation(
-      () => new Promise<LoadMoreResult>((resolve) => { release = resolve; }),
+      () =>
+        new Promise<LoadMoreResult>((resolve) => {
+          release = resolve;
+        }),
     );
     const warn = jest.spyOn(console, 'error').mockImplementation(() => {});
 

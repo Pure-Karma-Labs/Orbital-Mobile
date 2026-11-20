@@ -126,9 +126,7 @@ export interface ThreadListPaging {
 /** What asked for a page — a tap is allowed through guards a scroll is not. */
 type WalkTrigger = 'scroll' | 'tap' | 'auto';
 
-export function useThreadListPaging(
-  options: UseThreadListPagingOptions,
-): ThreadListPaging {
+export function useThreadListPaging(options: UseThreadListPagingOptions): ThreadListPaging {
   const {
     conversationId,
     renderedCount,
@@ -205,7 +203,18 @@ export function useThreadListPaging(
       // gesture that revealed the "Load more" row would keep re-arming the
       // loop against a server that just failed or rate-limited us.
       if (trigger !== 'tap' && cappedRef.current) return;
-      if (trigger !== 'tap' && requireFirstScroll && !scrolledRef.current) return;
+      if (trigger !== 'tap' && requireFirstScroll && !scrolledRef.current) {
+        // An AUTO trigger is the empty-list case: nothing renders, so there is
+        // no list to drag and `onScrollBeginDrag` will never come. Bailing
+        // silently there left a blank box with no way out of it, so the walk
+        // is marked stalled and the footer becomes the "Load more" row — the
+        // one gesture an unscrollable list can still offer, and a tap opens
+        // the gate. A SCROLL trigger (the content-size `onEndReached` the gate
+        // exists to swallow) stays silent: arming the row there would defeat
+        // the gate on every DM that merely has more.
+        if (trigger === 'auto') markCapped();
+        return;
+      }
 
       loadingMoreRef.current = true;
       cappedRef.current = false;

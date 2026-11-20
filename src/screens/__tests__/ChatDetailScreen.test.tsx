@@ -28,6 +28,13 @@ jest.mock('react-native-gesture-handler', () => {
 jest.mock('../../services/threadService', () => ({
   loadThreadsForGroup: jest.fn().mockResolvedValue([]),
   hydrateThreadsFromLocal: jest.fn(),
+  // #923 paging seams. The hook under the screen is REAL here: these three are
+  // the only things it touches outside the store.
+  loadMoreThreadsForGroup: jest
+    .fn()
+    .mockResolvedValue({ status: 'loaded', newIdCount: 0, hasMore: true }),
+  leaveThreadList: jest.fn(),
+  ensureThreadEntitiesCached: jest.fn().mockReturnValue(0),
 }));
 
 jest.mock('../../services/conversationService', () => ({
@@ -136,6 +143,18 @@ const mockUseThreads = jest.fn();
  */
 let mockKeyGeneration = 0;
 
+/**
+ * The paging slot `threadListWalk` writes (#923). The screen's hook reads it
+ * through `useThreadListPagingState`; a test sets it to stand in for a walk
+ * that has (or has not) more pages.
+ */
+let mockThreadListPaging = {
+  hasMore: false,
+  loadingMore: false,
+  loadMoreFailed: false,
+  totalCount: 0,
+};
+
 jest.mock('../../stores', () => {
   const getState = () => ({
     setViewingConversation: mockSetViewingConversation,
@@ -151,6 +170,7 @@ jest.mock('../../stores', () => {
     useAuth: () => ({ userId: 'test-user-id', username: 'testuser' }),
     useContactForConversation: () => null,
     useGroupKeyGeneration: () => mockKeyGeneration,
+    useThreadListPagingState: () => mockThreadListPaging,
     useAppStore: Object.assign(
       (selector: (s: ReturnType<typeof getState>) => unknown) => selector(getState()),
       { getState: jest.fn(getState) },
@@ -158,8 +178,17 @@ jest.mock('../../stores', () => {
   };
 });
 
-import { loadThreadsForGroup } from '../../services/threadService';
+import {
+  loadThreadsForGroup,
+  loadMoreThreadsForGroup,
+  leaveThreadList,
+  ensureThreadEntitiesCached,
+} from '../../services/threadService';
 const mockLoadThreadsForGroup = loadThreadsForGroup as jest.Mock;
+// #923: the walk seams.
+const mockLoadMoreThreadsForGroup = loadMoreThreadsForGroup as jest.Mock;
+const mockLeaveThreadList = leaveThreadList as jest.Mock;
+const mockEnsureThreadEntitiesCached = ensureThreadEntitiesCached as jest.Mock;
 
 import { toggleMute } from '../../services/notificationSettingsSync';
 const mockToggleMute = toggleMute as jest.Mock;
@@ -211,6 +240,24 @@ const populatedThreadsState = {
   threads: { 'thread-1': threadFixture },
   threadIdsByConversation: { 'dm-conv-1': ['thread-1'] },
 };
+
+/**
+ * The two group-key rejections `useGroupKeyLoadState` classifies by NAME
+ * (#912). Module scope because the load-more cases (#923) reuse them to pin
+ * which notice wins over the new empty-but-`hasMore` branch.
+ */
+function pendingWrap(): Error {
+  const e = new Error('Group key not yet available (pending wrap)');
+  e.name = 'PendingWrapError';
+  return e;
+}
+
+function unwrapFailure(selfHeal: string): Error {
+  const e = new Error(`Group key unwrap failed: recipient_mismatch / ${selfHeal}`);
+  e.name = 'GroupKeyUnwrapError';
+  (e as unknown as { selfHeal: string }).selfHeal = selfHeal;
+  return e;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -308,6 +355,17 @@ beforeEach(() => {
   mockStoreContacts = {};
   mockBlockedUserIds = [];
   mockMutedTargets = {};
+  mockThreadListPaging = {
+    hasMore: false,
+    loadingMore: false,
+    loadMoreFailed: false,
+    totalCount: 0,
+  };
+  mockLoadMoreThreadsForGroup.mockResolvedValue({
+    status: 'loaded',
+    newIdCount: 0,
+    hasMore: true,
+  });
   mockSearchState = {
     searchText: '',
     setSearchText: jest.fn(),
@@ -367,7 +425,8 @@ describe('ChatDetailScreen — data loading', () => {
       renderScreen('Bob');
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
-    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith('dm-conv-1');
+    // #923: the open of a DM drops whatever tail the previous one walked.
+    expect(mockLoadThreadsForGroup).toHaveBeenCalledWith('dm-conv-1', { tail: 'drop' });
   });
 });
 
@@ -911,19 +970,6 @@ describe('ChatDetailScreen — group key (#912)', () => {
     "This device can't open this conversation's encryption key. Another member needs to open Orbital to re-send it.";
   const PENDING_NOTICE = 'Re-sending encryption key…';
 
-  function pendingWrap(): Error {
-    const e = new Error('Group key not yet available (pending wrap)');
-    e.name = 'PendingWrapError';
-    return e;
-  }
-
-  function unwrapFailure(selfHeal: string): Error {
-    const e = new Error(`Group key unwrap failed: recipient_mismatch / ${selfHeal}`);
-    e.name = 'GroupKeyUnwrapError';
-    (e as unknown as { selfHeal: string }).selfHeal = selfHeal;
-    return e;
-  }
-
   /** Render and flush the load effect's promise. */
   async function render(): Promise<ReactTestRenderer> {
     const renderer = renderScreen('Bob');
@@ -1052,7 +1098,7 @@ describe('ChatDetailScreen — group key (#912)', () => {
 
     expect(count(renderer, 'group-key-failure-notice')).toBe(0);
     expect(texts(renderer).join('\n')).toContain('No messages yet');
-    expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-2');
+    expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-2', { tail: 'drop' });
   });
 
   // `loadThreadsForGroup` is not cancellable, so the first DM's rejection can
@@ -1223,7 +1269,7 @@ describe('ChatDetailScreen — group key (#912)', () => {
         renderer.update(screenElement('Bob', undefined, 'dm-conv-2'));
       });
 
-      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-2');
+      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-2', { tail: 'drop' });
       expect(count(renderer, 'group-key-failure-notice')).toBe(0);
       expect(count(renderer, 'group-key-pending-banner')).toBe(0);
       expect(texts(renderer).join('\n')).toContain('No messages yet');
@@ -1242,7 +1288,470 @@ describe('ChatDetailScreen — group key (#912)', () => {
         }),
       ).resolves.toBeUndefined();
 
-      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-1');
+      // The pull itself was the last load, and a pull KEEPS the walked tail.
+      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-1', { tail: 'keep' });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Load more — the thread-list cursor walk (#923)
+// ---------------------------------------------------------------------------
+
+/**
+ * The hook under the screen is REAL in these cases: the mocked seams are the
+ * three `threadService` functions and the paging slot `threadListWalk` would
+ * have written. What is being pinned is the SCREEN's wiring — which gesture
+ * reaches the walk, which option each load passes, and what the member sees
+ * when a page fails or renders nothing.
+ *
+ * The one difference from ThreadsScreen is the reason this block exists
+ * separately: a DM passes `requireFirstScroll`, because `onEndReached` also
+ * fires on a content-size change and a five-message DM must not send walk
+ * requests nobody asked for every time it is opened (#886).
+ */
+describe('ChatDetailScreen — load more (#923)', () => {
+  /** Seed `count` DM rows into the threads slice (0 = a DM that renders none). */
+  function setRows(count: number): void {
+    const threads: Record<string, Thread> = {};
+    const ids: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const id = `thread-${i}`;
+      ids.push(id);
+      threads[id] = makeThread({
+        id,
+        conversationId: 'dm-conv-1',
+        authorId: 'user-2',
+        authorUsername: 'bob',
+        title: null,
+        body: `Message ${i}`,
+        createdAt: now - i * 1000,
+        updatedAt: now - i * 1000,
+        lastReplyAt: null,
+      });
+    }
+    mockUseThreads.mockReturnValue({
+      ...emptyThreadsState,
+      threads,
+      threadIdsByConversation: count > 0 ? { 'dm-conv-1': ids } : {},
+    });
+  }
+
+  function flush(): Promise<void> {
+    return new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  async function render(conversationId?: string): Promise<ReactTestRenderer> {
+    const renderer = renderScreen('Bob', undefined, conversationId);
+    await act(async () => {
+      await flush();
+    });
+    return renderer;
+  }
+
+  async function rerender(
+    renderer: ReactTestRenderer,
+    conversationId?: string,
+  ): Promise<void> {
+    await act(async () => {
+      renderer.update(screenElement('Bob', undefined, conversationId));
+    });
+    await act(async () => {
+      await flush();
+    });
+  }
+
+  function find(renderer: ReactTestRenderer, testID: string): number {
+    return renderer.root.findAll((node) => node.props.testID === testID).length;
+  }
+
+  function texts(renderer: ReactTestRenderer): string[] {
+    return renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+  }
+
+  /**
+   * The ONE list host node — keyed on `data` + `refreshControl`, the pair the
+   * pull-to-refresh block already uses: both are spread all the way down to
+   * the ScrollView, and exactly one of the carriers is a host.
+   */
+  function listProps(renderer: ReactTestRenderer): Record<string, unknown> {
+    const nodes = renderer.root.findAll(
+      (n) =>
+        typeof n.type === 'string' &&
+        Array.isArray(n.props.data) &&
+        n.props.refreshControl != null,
+    );
+    expect(nodes).toHaveLength(1);
+    return nodes[0].props as Record<string, unknown>;
+  }
+
+  /**
+   * The props the SCREEN passed, from the outermost composite list node.
+   * `onScrollBeginDrag` has to be read here rather than off the host:
+   * VirtualizedList substitutes a handler of its own, which wants a real
+   * scroll event, before the prop reaches the ScrollView.
+   */
+  function screenListProps(renderer: ReactTestRenderer): Record<string, unknown> {
+    const nodes = renderer.root.findAll(
+      (n) =>
+        typeof n.type !== 'string' &&
+        Array.isArray(n.props.data) &&
+        n.props.refreshControl != null,
+    );
+    expect(nodes.length).toBeGreaterThan(0);
+    return nodes[0].props as Record<string, unknown>;
+  }
+
+  /** The gesture the DM gate is waiting for. */
+  function beginDrag(renderer: ReactTestRenderer): void {
+    const onScrollBeginDrag = screenListProps(renderer).onScrollBeginDrag as () => void;
+    expect(typeof onScrollBeginDrag).toBe('function');
+    act(() => {
+      onScrollBeginDrag();
+    });
+  }
+
+  async function endReach(renderer: ReactTestRenderer, times = 1): Promise<void> {
+    const onEndReached = listProps(renderer).onEndReached as () => void;
+    await act(async () => {
+      for (let i = 0; i < times; i++) onEndReached();
+      await flush();
+    });
+  }
+
+  /** The footer's "Load more" row, by the component node that owns onPress. */
+  function retryRow(renderer: ReactTestRenderer): { onPress: () => void } | null {
+    const nodes = renderer.root.findAll(
+      (n) => n.props.testID === 'thread-list-footer-retry' && typeof n.props.onPress === 'function',
+    );
+    return nodes.length === 0 ? null : (nodes[0].props as { onPress: () => void });
+  }
+
+  beforeEach(() => {
+    setRows(3);
+    mockThreadListPaging = {
+      hasMore: true,
+      loadingMore: false,
+      loadMoreFailed: false,
+      totalCount: 100,
+    };
+  });
+
+  describe('the first-scroll gate (#886)', () => {
+    it('ignores an end-reach before the member has dragged, then walks once per reach', async () => {
+      // A page that adds ids with no filter active IS growth, so the loop stops
+      // after one: what is pinned after the gate opens is the ref guard.
+      mockLoadMoreThreadsForGroup.mockResolvedValue({
+        status: 'loaded',
+        newIdCount: 30,
+        hasMore: true,
+      });
+      const renderer = await render();
+
+      // `onEndReached` fires on the content-size change of a short DM. Nothing
+      // may go out: the member has not asked for anything yet.
+      await endReach(renderer, 2);
+      expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
+
+      beginDrag(renderer);
+      await endReach(renderer, 3);
+
+      expect(mockLoadMoreThreadsForGroup).toHaveBeenCalledTimes(1);
+      expect(mockLoadMoreThreadsForGroup).toHaveBeenCalledWith('dm-conv-1');
+    });
+  });
+
+  describe('the follow-up loop', () => {
+    it('keeps paging while pages add no ids, and stops when one does', async () => {
+      mockLoadMoreThreadsForGroup
+        .mockResolvedValueOnce({ status: 'loaded', newIdCount: 0, hasMore: true })
+        .mockResolvedValueOnce({ status: 'loaded', newIdCount: 0, hasMore: true })
+        .mockResolvedValueOnce({ status: 'loaded', newIdCount: 12, hasMore: true });
+
+      const renderer = await render();
+      beginDrag(renderer);
+      await endReach(renderer);
+
+      expect(mockLoadMoreThreadsForGroup).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('a walk that stops short', () => {
+    it('turns a failed page into a tappable Load more row that retries', async () => {
+      mockLoadMoreThreadsForGroup.mockRejectedValueOnce(new Error('network down'));
+
+      const renderer = await render();
+      beginDrag(renderer);
+      await endReach(renderer);
+
+      const row = retryRow(renderer);
+      expect(row).not.toBeNull();
+      // A real frame, not hitSlop: the footer's parent is short (#888).
+      const frame = renderer.root.findAll(
+        (n) => n.props.testID === 'thread-list-footer-retry' && n.props.accessibilityRole === 'button',
+      );
+      expect(frame.length).toBeGreaterThan(0);
+
+      mockLoadMoreThreadsForGroup.mockResolvedValue({
+        status: 'loaded',
+        newIdCount: 20,
+        hasMore: true,
+      });
+      await act(async () => {
+        row?.onPress();
+        await flush();
+      });
+
+      expect(mockLoadMoreThreadsForGroup).toHaveBeenCalledTimes(2);
+      expect(retryRow(renderer)).toBeNull();
+    });
+
+    it('a 429 stops chaining and offers the retry', async () => {
+      mockLoadMoreThreadsForGroup.mockResolvedValue({
+        status: 'rate-limited',
+        newIdCount: 0,
+        hasMore: true,
+      });
+
+      const renderer = await render();
+      beginDrag(renderer);
+      await endReach(renderer);
+
+      expect(mockLoadMoreThreadsForGroup).toHaveBeenCalledTimes(1);
+      expect(retryRow(renderer)).not.toBeNull();
+    });
+
+  });
+
+  describe('a DM that renders nothing but has more', () => {
+    it('shows the paging branch instead of "Start the conversation!"', async () => {
+      // THE case this branch exists for: the whole head page is a blocked
+      // author, so the DM renders nothing while the server says there are 100
+      // threads. "Start the conversation!" would be a lie about a DM full of
+      // history.
+      setRows(0);
+      const renderer = await render();
+
+      expect(find(renderer, 'chat-paging-empty')).toBeGreaterThan(0);
+      expect(texts(renderer).join('\n')).not.toContain('No messages yet');
+      expect(texts(renderer)).not.toContain('Send a Message');
+      // An empty list cannot be scrolled, and the DM gate is still closed, so
+      // nothing walks on its own — the member decides (#886).
+      expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
+      // ...and the branch is not a blank box: an unscrollable list can never
+      // open the first-scroll gate, so the hook marks the walk stalled on the
+      // AUTO trigger and the member gets the one gesture that still reaches
+      // it. (This assertion is the fix for a gap the suite found first: the
+      // auto-fill used to return at the gate silently, leaving an empty
+      // centred View with no way out.)
+      expect(retryRow(renderer)).not.toBeNull();
+    });
+
+    it('offers a tappable row that walks, with no scroll the list could not take', async () => {
+      // The store's own failure flag is enough to render the row, and a TAP is
+      // the gesture the first-scroll gate was waiting for — so the one thing
+      // the member can do on an unscrollable list does reach the walk.
+      setRows(0);
+      mockThreadListPaging = { ...mockThreadListPaging, loadMoreFailed: true };
+      mockLoadMoreThreadsForGroup.mockResolvedValue({
+        status: 'loaded',
+        newIdCount: 20,
+        hasMore: true,
+      });
+
+      const renderer = await render();
+      expect(find(renderer, 'chat-paging-empty')).toBeGreaterThan(0);
+      const row = retryRow(renderer);
+      expect(row).not.toBeNull();
+      // A real ≥44pt frame, not hitSlop: slop escaping a short parent is
+      // clipped in this repo (#888).
+      expect(
+        renderer.root.findAll(
+          (n) =>
+            n.props.testID === 'thread-list-footer-retry' &&
+            n.props.accessibilityRole === 'button',
+        ).length,
+      ).toBeGreaterThan(0);
+      expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
+
+      await act(async () => {
+        row?.onPress();
+        await flush();
+      });
+
+      expect(mockLoadMoreThreadsForGroup).toHaveBeenCalledWith('dm-conv-1');
+    });
+
+    it('still shows the create-first empty state when there is nothing more', async () => {
+      setRows(0);
+      mockThreadListPaging = { ...mockThreadListPaging, hasMore: false };
+      const renderer = await render();
+
+      expect(find(renderer, 'chat-paging-empty')).toBe(0);
+      expect(texts(renderer).join('\n')).toContain('No messages yet');
+      expect(texts(renderer)).toContain('Send a Message');
+      expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
+    });
+
+    describe('which notice wins', () => {
+      it('the blocked-peer notice outranks the paging branch', async () => {
+        setRows(0);
+        mockStoreConversations = {
+          'dm-conv-1': { id: 'dm-conv-1', type: 'direct', peerUserId: 'u-bob', name: 'bob' },
+        };
+        mockBlockedUserIds = ['u-bob'];
+
+        const renderer = await render();
+
+        expect(find(renderer, 'blocked-peer-notice')).toBeGreaterThan(0);
+        expect(find(renderer, 'chat-paging-empty')).toBe(0);
+      });
+
+      it('the key-pending banner outranks the paging branch', async () => {
+        setRows(0);
+        mockLoadThreadsForGroup.mockRejectedValueOnce(pendingWrap());
+
+        const renderer = await render();
+
+        expect(find(renderer, 'group-key-pending-body')).toBeGreaterThan(0);
+        expect(find(renderer, 'chat-paging-empty')).toBe(0);
+      });
+
+      it('the key-failure notice outranks the paging branch', async () => {
+        setRows(0);
+        mockLoadThreadsForGroup.mockRejectedValueOnce(unwrapFailure('exhausted'));
+
+        const renderer = await render();
+
+        expect(find(renderer, 'group-key-failure-notice')).toBeGreaterThan(0);
+        expect(find(renderer, 'chat-paging-empty')).toBe(0);
+      });
+    });
+  });
+
+  describe('which load keeps the walked tail', () => {
+    it('drops it on the first load and on a conversation change, keeps it on a key heal', async () => {
+      const renderer = await render();
+      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-1', { tail: 'drop' });
+
+      // A heal bump re-reads the SAME DM's head page: dropping the tail here
+      // would yank the member back to the top of a list they walked.
+      mockKeyGeneration = 1;
+      await rerender(renderer);
+      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-1', { tail: 'keep' });
+
+      // A params-in-place navigate to another DM keeps this mount, and the
+      // walked tail belongs to the DM being left.
+      await rerender(renderer, 'dm-conv-2');
+      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-2', { tail: 'drop' });
+    });
+
+    it('pull-to-refresh keeps it', async () => {
+      const renderer = await render();
+      const refreshControl = listProps(renderer).refreshControl as {
+        props: { onRefresh: () => Promise<void> };
+      };
+
+      await act(async () => {
+        await refreshControl.props.onRefresh();
+        await flush();
+      });
+
+      expect(mockLoadThreadsForGroup).toHaveBeenLastCalledWith('dm-conv-1', { tail: 'keep' });
+    });
+  });
+
+  describe('leaving the conversation', () => {
+    it('leaves the OLD DM when the route re-points in place', async () => {
+      const renderer = await render();
+      expect(mockLeaveThreadList).not.toHaveBeenCalled();
+
+      await rerender(renderer, 'dm-conv-2');
+
+      expect(mockLeaveThreadList).toHaveBeenCalledWith('dm-conv-1');
+      expect(mockLeaveThreadList).not.toHaveBeenCalledWith('dm-conv-2');
+    });
+
+    it('leaves on unmount', async () => {
+      const renderer = await render();
+      act(() => {
+        renderer.unmount();
+      });
+
+      expect(mockLeaveThreadList).toHaveBeenCalledWith('dm-conv-1');
+    });
+  });
+
+  describe('search', () => {
+    it('does not walk while the screen is searching', async () => {
+      mockSearchState = { ...mockSearchState, isSearching: true, resultThreadIds: ['thread-0'] };
+      const renderer = await render();
+      beginDrag(renderer);
+      await endReach(renderer);
+
+      expect(mockLoadMoreThreadsForGroup).not.toHaveBeenCalled();
+      expect(listProps(renderer).ListFooterComponent).toBeNull();
+    });
+
+    it('hydrates result entities the walk trim dropped', async () => {
+      mockSearchState = {
+        ...mockSearchState,
+        isSearching: true,
+        resultThreadIds: ['thread-0', 'trimmed-1'],
+      };
+      await render();
+
+      expect(mockEnsureThreadEntitiesCached).toHaveBeenCalledWith(['thread-0', 'trimmed-1']);
+    });
+
+    it('renders a result whose entity is in the map and skips one that is not', async () => {
+      mockSearchState = {
+        ...mockSearchState,
+        isSearching: true,
+        resultThreadIds: ['thread-1', 'trimmed-1'],
+      };
+      const renderer = await render();
+
+      expect(texts(renderer)).toContain('Message 1');
+    });
+
+    it('scrolls to the top on ENTERING search, and not on leaving it', async () => {
+      const scrollSpy = jest.fn();
+      const renderer = await render();
+      // The instance `flatListRef` points at. NOT the outermost list node:
+      // `Animated.FlatList` is a forwardRef wrapper with no instance of its
+      // own, and stubbing nothing would make this case pass by default.
+      const instance = renderer.root
+        .findAll((n) => typeof n.type !== 'string' && typeof n.props.data !== 'undefined')
+        .map((n) => (n as unknown as { instance: { scrollToOffset?: unknown } | null }).instance)
+        .find((i) => i != null && typeof i.scrollToOffset === 'function');
+      expect(instance).toBeDefined();
+      (instance as { scrollToOffset: unknown }).scrollToOffset = scrollSpy;
+
+      mockSearchState = { ...mockSearchState, isSearching: true, resultThreadIds: ['thread-1'] };
+      await rerender(renderer);
+      const scrollsOnEnter = scrollSpy.mock.calls.length;
+      expect(scrollsOnEnter).toBeGreaterThan(0);
+
+      mockSearchState = { ...mockSearchState, isSearching: false, resultThreadIds: [] };
+      await rerender(renderer);
+
+      // Entering scrolls; LEAVING must not add one — a walked list's position
+      // survives the search overlay (#923).
+      expect(scrollSpy.mock.calls.length).toBe(scrollsOnEnter);
+    });
+  });
+
+  it('anchors the viewport and clips subviews on iOS', async () => {
+    const renderer = await render();
+    const props = listProps(renderer);
+
+    expect(props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 });
+    expect(props.onEndReachedThreshold).toBe(0.3);
+    // Platform in jest is ios: the pair ships together there.
+    expect(props.removeClippedSubviews).toBe(true);
   });
 });

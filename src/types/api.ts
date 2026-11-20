@@ -578,31 +578,76 @@ export interface ThreadListItem {
 /**
  * GET /api/groups/:groupId/threads response.
  *
- * Backend returns: { threads, total_count, has_more }
- * Uses offset pagination (limit + offset query params).
+ * Backend returns: { threads, total_count, has_more, next_cursor? }
+ *
+ * Two pagination modes, never mixed (see {@link GetGroupThreadsRequest}):
+ * offset paging (`limit` + `offset`) and the keyset cursor walk (`before`).
  */
 export interface ListThreadsResponse {
   threads: ThreadListItem[];
   totalCount: number;
   hasMore: boolean;
+  /**
+   * Opaque keyset cursor for the NEXT page, served iff `hasMore` (Backend
+   * #313). `hasMore === false` is the only end-of-list signal; `hasMore: true`
+   * with no cursor is a pre-#313 server, which cannot be walked at all.
+   *
+   * The value encodes the group and thread UUIDs of the last row on this page
+   * and is bound to the `sort` it was issued under — reusing it under another
+   * sort, or in another group, is a 400 `INVALID_CURSOR`. SECURITY: it carries
+   * row identity, so it must never reach the store, persisted state, Sentry or
+   * any log line. It is handed straight back to {@link GetGroupThreadsRequest}
+   * and held nowhere else (`threadListWalk`'s in-memory map).
+   */
+  nextCursor?: string;
+}
+
+/** Sort orders the thread-list route accepts; anything else falls back to `created_desc`. */
+export type ThreadListSort = 'created_asc' | 'created_desc' | 'activity_desc';
+
+/** The params both pagination modes share. */
+interface GetGroupThreadsCommon {
+  /** Server default 50, maximum 100 — a larger value is clamped, not rejected. */
+  limit?: number;
+  /**
+   * `activity_desc` (#883) orders by GREATEST(thread.created_at, MAX reply
+   * created_at) DESC, so the 50-row page is the 50 MOST ACTIVE threads rather
+   * than the 50 newest. An older backend that doesn't know the value falls
+   * through its whitelist ternary to `created_desc`, which is the pre-#883
+   * behaviour — so sending it is safe against a not-yet-deployed server.
+   *
+   * The cursor WALK uses `created_desc` instead (#923): `activity_desc` costs
+   * O(group size) per page server-side, and its sort keys move when a reply
+   * lands, which a keyset walk cannot follow.
+   */
+  sort?: ThreadListSort;
+}
+
+/** Head/offset paging. `before` is structurally excluded (#923). */
+export interface GetGroupThreadsOffsetRequest extends GetGroupThreadsCommon {
+  offset?: number;
+  before?: never;
+}
+
+/** One step of the keyset walk. `offset` is structurally excluded (#923). */
+export interface GetGroupThreadsCursorRequest extends GetGroupThreadsCommon {
+  /** A {@link ListThreadsResponse.nextCursor} from the SAME sort and group. */
+  before: string;
+  offset?: never;
 }
 
 /**
  * Query params for GET /api/groups/:groupId/threads.
  *
- * Backend accepts: { limit, offset, sort }
+ * Backend accepts: { limit, offset, sort, before }
  *
- * `activity_desc` (#883) orders by GREATEST(thread.created_at, MAX reply
- * created_at) DESC, so the 50-row page is the 50 MOST ACTIVE threads rather
- * than the 50 newest. An older backend that doesn't know the value falls
- * through its whitelist ternary to `created_desc`, which is the pre-#883
- * behaviour — so sending it is safe against a not-yet-deployed server.
+ * A UNION, not one bag of optional fields: the route answers 400
+ * `INVALID_CURSOR` when `before` and `offset` arrive together, so the pairing
+ * is rejected here at compile time instead of at runtime on a member's device.
  */
-export interface GetGroupThreadsRequest {
-  limit?: number;
-  offset?: number;
-  sort?: 'created_asc' | 'created_desc' | 'activity_desc';
-}
+export type GetGroupThreadsRequest =
+  | GetGroupThreadsOffsetRequest
+  | GetGroupThreadsCursorRequest;
 
 /**
  * POST /api/threads/:threadId/replies request.

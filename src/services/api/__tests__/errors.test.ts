@@ -350,6 +350,8 @@ describe('ValidationError reasons', () => {
       'IMPORT_BATCH_TOO_LARGE',
       'IMPORT_DECLARED_INVALID',
       'IMPORT_MEDIA_TYPE_UNSUPPORTED',
+      // #923: the thread-list walk routes on it; the member never reads it.
+      'INVALID_CURSOR',
     ]) {
       const e = new ValidationError(400, validationBody(code));
       expect(e.reason).toBe(code);

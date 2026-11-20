@@ -1025,6 +1025,31 @@ describe('retryOn429', () => {
       jest.useRealTimers();
     }
   });
+
+  it('warns with the pathname only, never the query string (#923)', async () => {
+    // The thread-list walk puts an opaque `before` cursor — group and thread
+    // UUIDs — in the query string of exactly this request.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.useFakeTimers();
+    try {
+      mockFetchError(429, 'rate limited');
+
+      const pending = request({
+        method: 'GET',
+        path: '/api/threads/groups/g-1/threads?sort=created_desc&before=SECRET-CURSOR',
+      }).catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(30_000);
+      await pending;
+
+      const logged = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+      expect(logged).toContain('429 on GET /api/threads/groups/g-1/threads');
+      expect(logged).not.toContain('SECRET-CURSOR');
+      expect(logged).not.toContain('?');
+    } finally {
+      jest.useRealTimers();
+      warn.mockRestore();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

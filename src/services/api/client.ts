@@ -460,7 +460,12 @@ async function _executeRequest(options: RequestOptions): Promise<Response> {
     // 429 retry with exponential backoff (opt-out per request: retryOn429)
     if (response.status === 429 && retryOn429 && attempt < MAX_429_RETRIES) {
       if (__DEV__) {
-        console.warn(`[API] 429 on ${method} ${path} — retry ${attempt + 1}/${MAX_429_RETRIES}`);
+        // PATHNAME ONLY, never `path` (#923): a thread-list query string can
+        // carry an opaque `before` cursor, which encodes the group and thread
+        // UUIDs of a real row. Query strings elsewhere hold ids and offsets
+        // too, so the split is unconditional rather than per-route.
+        const pathname = path.split('?')[0];
+        console.warn(`[API] 429 on ${method} ${pathname} — retry ${attempt + 1}/${MAX_429_RETRIES}`);
       }
 
       await delayForRateLimit(attempt, callerSignal);

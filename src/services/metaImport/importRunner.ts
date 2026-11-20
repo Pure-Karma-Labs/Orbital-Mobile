@@ -2348,7 +2348,13 @@ async function settleRun(r: ActiveRun): Promise<void> {
     // refetch is a belt. The WS case exists since #927
     // (`messageHandler.handleImportCompleted`); `loadThreadsForGroup` is
     // idempotent, so the two cannot double-apply.
-    void loadThreadsForGroup(r.conversationId).catch(() => {
+    //
+    // `tail: 'drop'` because this is THIS DEVICE's own import settling (#923):
+    // the rows land at their original dates, anywhere in the list, and the
+    // member who started it is in Settings rather than holding a scroll
+    // position worth preserving. The list returns to its head and the new rows
+    // are reachable by scrolling from there.
+    void loadThreadsForGroup(r.conversationId, { tail: 'drop' }).catch(() => {
       // Nothing the member can act on: the threads arrive on the next open.
     });
   } finally {

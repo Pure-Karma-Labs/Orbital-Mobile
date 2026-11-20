@@ -655,11 +655,17 @@ function handleOwnerChanged(data: OwnerChangedPayload): void {
  * backfill would be indistinguishable from spam. The server agrees: it leaves
  * imported threads out of `unread_count` and `last_message_at`.
  *
- * REACHABILITY LIMIT (#923): this client fetches ONE page of 50 threads, and a
- * past-dated import sorts to the tail under both server orders. So in a busy
- * orbit the refetch below surfaces nothing — the rows only become reachable
- * once #923's `created_desc` cursor walk lands. It still pays for itself in a
- * small orbit, and for a same-day import.
+ * ANOTHER MEMBER'S IMPORT, so the refetch MERGES: the default `tail` keeps
+ * whatever this member has paged in, and their scroll position with it (#923).
+ * It is not a reopen — this device's own import settling is (see
+ * `importRunner`), because that member is in Settings rather than mid-scroll.
+ *
+ * REACHABILITY LIMIT: the head page is 50 rows and a past-dated import sorts
+ * to the tail under both server orders, so in a busy orbit this refetch alone
+ * still surfaces nothing. The rows are reachable by scrolling to the end of
+ * the list, which walks `created_desc` pages (#923); a member already mid-walk
+ * sees rows dated inside the range they have walked on their next open, not
+ * immediately. It pays for itself in a small orbit and for a same-day import.
  *
  * The skips are all "there is nothing this refetch could show": an unknown
  * conversation, a DM (the backend never imports into one), an orbit whose
@@ -687,6 +693,9 @@ function handleImportCompleted(data: ImportCompletedPayload): void {
   // screen reloads on focus anyway. The rejection is swallowed rather than
   // reported — it carries a server error for a list the member may not even be
   // looking at.
+  // No options: merge-on-refresh is the default wherever a walk has a tail,
+  // and `loadMoreThreadsForGroup` is deliberately NOT called from here — a
+  // socket event must not spend the member's page budget behind their back.
   void loadThreadsForGroup(data.groupId).catch(() => {});
 }
 

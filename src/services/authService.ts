@@ -44,6 +44,7 @@ import {
 } from './mediaExportService';
 import { abortAllArchiveSessions, releaseAllPersistedParts } from './metaImport/archiveAccess';
 import { clearMessageHandlerState } from './websocket/messageHandler';
+import { clearThreadListPaging } from './threadListWalk';
 import { clearGroupKeyTelemetryState } from './groupKeyTelemetry';
 import { execute } from '../database/queryHelpers';
 import { isDatabaseInitialized, closeDatabase } from '../database/connection';
@@ -559,6 +560,12 @@ export async function localWipe({ preserveIdentity }: { preserveIdentity: boolea
   }
   try { clearMessageHandlerState(); } catch {
     if (__DEV__) console.warn('[LocalWipe] clearMessageHandlerState failed');
+  }
+  // Beside the other module clears so it runs on logout AND on deletion: a
+  // thread-list walk holds server cursors that encode row identity for the
+  // account being wiped, plus the paging slots the footer renders from (#923).
+  try { clearThreadListPaging(); } catch {
+    if (__DEV__) console.warn('[LocalWipe] clearThreadListPaging failed');
   }
   // Own line, next to the other per-session budgets: the group-key reporter
   // spends one event per (group, outcome) per session, and the next account on

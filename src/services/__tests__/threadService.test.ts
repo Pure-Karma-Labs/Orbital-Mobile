@@ -9,7 +9,8 @@
 jest.mock('../../database/repositories/threadRepository', () => ({
   saveThread: jest.fn(),
   saveThreadBatch: jest.fn(),
-  getThreadsForConversation: jest.fn(() => []),
+  getRecentThreadsForConversation: jest.fn(() => []),
+  getThreadsByIds: jest.fn(() => []),
   getThread: jest.fn(() => null),
 }));
 
@@ -77,6 +78,13 @@ const mockReconcileReplies = jest.fn(() => [] as string[]);
 const mockAddOptimisticThread = jest.fn();
 const mockRemoveThread = jest.fn();
 const mockSetThreads = jest.fn();
+// #923 — the additive paging half of the slice, plus the paging slot the walk
+// module is the single writer of.
+const mockMergeThreads = jest.fn(() => 0);
+const mockTrimThreadsToHead = jest.fn();
+const mockCacheThreadEntities = jest.fn();
+const mockSetThreadListPaging = jest.fn();
+const mockClearThreadListPagingSlot = jest.fn();
 const mockUpdateThreadSyncStatus = jest.fn();
 const mockBumpLastMessageAt = jest.fn();
 
@@ -99,6 +107,12 @@ jest.mock('../../stores/useAppStore', () => ({
       addOptimisticThread: mockAddOptimisticThread,
       removeThread: mockRemoveThread,
       setThreads: mockSetThreads,
+      mergeThreads: mockMergeThreads,
+      trimThreadsToHead: mockTrimThreadsToHead,
+      cacheThreadEntities: mockCacheThreadEntities,
+      setThreadListPaging: mockSetThreadListPaging,
+      clearThreadListPaging: mockClearThreadListPagingSlot,
+      threadListPaging: {},
       updateThreadSyncStatus: mockUpdateThreadSyncStatus,
       bumpLastMessageAt: mockBumpLastMessageAt,
       // #906 review: the request-ordering token the recency reconcile reads.
@@ -118,8 +132,8 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, createNewThread, reconcileThreadReplies, applyReplyToParentThread, getKnownThreadAuthorId } from '../threadService';
-import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation, getThread as dbGetThread } from '../../database/repositories/threadRepository';
+import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, loadMoreThreadsForGroup, leaveThreadList, ensureThreadEntitiesCached, createNewThread, reconcileThreadReplies, applyReplyToParentThread, getKnownThreadAuthorId } from '../threadService';
+import { saveThread as dbSaveThread, saveThreadBatch, getRecentThreadsForConversation, getThreadsByIds, getThread as dbGetThread } from '../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../../database/repositories/replyRepository';
 import { isDatabaseInitialized } from '../../database/connection';
 import { getMedia, getMediaForReply } from '../../database/repositories/mediaRepository';
@@ -132,6 +146,7 @@ import {
   encryptContent,
   getOrFetchGroupKey,
 } from '../crypto/contentCrypto';
+import { clearThreadListPaging, peekWalk } from '../threadListWalk';
 import { makeThread } from '../../testUtils/makeThread';
 import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, CreateThreadResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
 import type { Thread, Conversation, Contact } from '../../types/store';
@@ -147,7 +162,8 @@ const mockGetOrFetchGroupKey = getOrFetchGroupKey as jest.MockedFunction<typeof 
 
 const mockDbSaveThread = dbSaveThread as jest.MockedFunction<typeof dbSaveThread>;
 const mockSaveThreadBatch = saveThreadBatch as jest.MockedFunction<typeof saveThreadBatch>;
-const mockGetThreadsForConversation = getThreadsForConversation as jest.MockedFunction<typeof getThreadsForConversation>;
+const mockGetRecentThreadsForConversation = getRecentThreadsForConversation as jest.MockedFunction<typeof getRecentThreadsForConversation>;
+const mockGetThreadsByIds = getThreadsByIds as jest.MockedFunction<typeof getThreadsByIds>;
 const mockDbGetThread = dbGetThread as jest.MockedFunction<typeof dbGetThread>;
 const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
 const mockSaveReplyBatch = saveReplyBatch as jest.MockedFunction<typeof saveReplyBatch>;
@@ -224,6 +240,7 @@ function makeThreadListItem(overrides: Partial<ThreadListItem> = {}): ThreadList
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockMergeThreads.mockReturnValue(0);
   mockIsDatabaseInitialized.mockReturnValue(true);
   const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
     useAppStore: { getState: jest.Mock };
@@ -247,6 +264,12 @@ beforeEach(() => {
     addOptimisticThread: mockAddOptimisticThread,
     removeThread: mockRemoveThread,
     setThreads: mockSetThreads,
+    mergeThreads: mockMergeThreads,
+    trimThreadsToHead: mockTrimThreadsToHead,
+    cacheThreadEntities: mockCacheThreadEntities,
+    setThreadListPaging: mockSetThreadListPaging,
+    clearThreadListPaging: mockClearThreadListPagingSlot,
+    threadListPaging: {},
     updateThreadSyncStatus: mockUpdateThreadSyncStatus,
     bumpLastMessageAt: mockBumpLastMessageAt,
     // #908: see the factory mock above — the blocked-DM-peer derivation slices.
@@ -255,6 +278,12 @@ beforeEach(() => {
     blockedUserIds: [],
     blockedUserProfiles: {},
   });
+  // #923: the walk map is module state. Without this, one test's walked tail
+  // makes the next test's `loadThreadsForGroup` merge instead of replace. It
+  // runs AFTER the store mock above, because it writes through the slice.
+  clearThreadListPaging();
+  mockSetThreadListPaging.mockClear();
+  mockClearThreadListPagingSlot.mockClear();
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
   mockDecryptContent.mockImplementation((ciphertext: string) => {
     if (ciphertext.includes('title')) return 'Decrypted Title';
@@ -1229,7 +1258,7 @@ describe('persistence write-through', () => {
 // ---------------------------------------------------------------------------
 
 describe('hydration', () => {
-  it('hydrateThreadsFromLocal calls getThreadsForConversation and populates store', () => {
+  it('hydrateThreadsFromLocal reads the BOUNDED local page and populates store (#923)', () => {
     const fakeThreads = [
       makeThread({
         id: 'thread-1',
@@ -1247,7 +1276,7 @@ describe('hydration', () => {
         syncStatus: 'synced',
       }),
     ];
-    mockGetThreadsForConversation.mockReturnValueOnce(fakeThreads);
+    mockGetRecentThreadsForConversation.mockReturnValueOnce(fakeThreads);
 
     const mockSetThreads = jest.fn();
     const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
@@ -1268,12 +1297,12 @@ describe('hydration', () => {
 
     hydrateThreadsFromLocal('conv-1');
 
-    expect(mockGetThreadsForConversation).toHaveBeenCalledWith('conv-1');
+    expect(mockGetRecentThreadsForConversation).toHaveBeenCalledWith('conv-1', 200);
     expect(mockSetThreads).toHaveBeenCalledWith('conv-1', fakeThreads);
   });
 
   it('hydrateThreadsFromLocal returns without store update when DB returns empty', () => {
-    mockGetThreadsForConversation.mockReturnValueOnce([]);
+    mockGetRecentThreadsForConversation.mockReturnValueOnce([]);
 
     // Do NOT queue a getState once-value here: hydrateThreadsFromLocal guards
     // behind `threads.length > 0`, so getState() is never called on the empty
@@ -1324,7 +1353,7 @@ describe('hydration', () => {
   });
 
   it('hydrateThreadsFromLocal swallows errors', () => {
-    mockGetThreadsForConversation.mockImplementationOnce(() => { throw new Error('DB error'); });
+    mockGetRecentThreadsForConversation.mockImplementationOnce(() => { throw new Error('DB error'); });
 
     expect(() => hydrateThreadsFromLocal('conv-1')).not.toThrow();
   });
@@ -1340,7 +1369,7 @@ describe('hydration', () => {
 
     hydrateThreadsFromLocal('conv-1');
 
-    expect(mockGetThreadsForConversation).not.toHaveBeenCalled();
+    expect(mockGetRecentThreadsForConversation).not.toHaveBeenCalled();
   });
 
   it('hydrateRepliesFromLocal no-ops when database not initialized', () => {
@@ -1987,6 +2016,12 @@ describe('#908 blocked DM peer refuses the send', () => {
       addOptimisticThread: mockAddOptimisticThread,
       removeThread: mockRemoveThread,
       setThreads: mockSetThreads,
+      mergeThreads: mockMergeThreads,
+      trimThreadsToHead: mockTrimThreadsToHead,
+      cacheThreadEntities: mockCacheThreadEntities,
+      setThreadListPaging: mockSetThreadListPaging,
+      clearThreadListPaging: mockClearThreadListPagingSlot,
+      threadListPaging: {},
       updateThreadSyncStatus: mockUpdateThreadSyncStatus,
       bumpLastMessageAt: mockBumpLastMessageAt,
       blockedUsersGeneration: 0,

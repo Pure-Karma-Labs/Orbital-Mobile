@@ -39,6 +39,7 @@ import { resetImportRunnerState, resumeImportAtLaunch } from './metaImport/impor
 import { clearIdentityInflightState } from './crypto/identityKeyAccess';
 import { captureError } from './telemetry';
 import { clearMessageHandlerState } from './websocket/messageHandler';
+import { clearThreadListPaging } from './threadListWalk';
 import { loadEciesLockState } from './crypto/downgradeProtection';
 import {
   loadConversations,
@@ -501,6 +502,13 @@ async function doRecoverIdentityKeys(
       }
       try {
         clearMessageHandlerState();
+      } catch {
+        /* best-effort */
+      }
+      // #923: the walk map and every paging slot. Cursors encode row identity
+      // for the account this recovery is leaving behind.
+      try {
+        clearThreadListPaging();
       } catch {
         /* best-effort */
       }

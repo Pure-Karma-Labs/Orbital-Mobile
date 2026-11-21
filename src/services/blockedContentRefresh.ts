@@ -65,7 +65,26 @@ import { useAppStore } from '../stores/useAppStore';
 let inflight: Promise<void> | null = null;
 let rerunRequested = false;
 
+/**
+ * What the next run must do with a conversation's walked thread-list tail
+ * (#923).
+ *
+ * A BLOCK keeps it: the server simply stops counting that author, so the rows
+ * already paged in stay valid and the member keeps their scroll position. An
+ * UNBLOCK drops it: the author's threads can reappear ANYWHERE in the list,
+ * including inside the range this device has already walked, and a merge can
+ * only append. Dropping returns the list to its head, from where scrolling
+ * reaches them again.
+ *
+ * `'drop'` wins over `'keep'` when runs coalesce: an unblock folded into a
+ * block's re-run must still reopen.
+ */
+let queuedTail: 'keep' | 'drop' = 'keep';
+
 async function runRefreshOnce(): Promise<void> {
+  const tail = queuedTail;
+  queuedTail = 'keep';
+
   const [
     { loadConversations, loadDmConversations, captureSession, isSessionStale },
     { loadThreadsForGroup, loadThread },
@@ -94,7 +113,7 @@ async function runRefreshOnce(): Promise<void> {
   const tasks: Promise<unknown>[] = [
     loadConversations(),
     loadDmConversations(),
-    ...[...conversationIds].map((id) => loadThreadsForGroup(id)),
+    ...[...conversationIds].map((id) => loadThreadsForGroup(id, { tail })),
   ];
   // The open thread's own detail row: its `reply_count` / `last_reply_at` are
   // per-viewer too, and the list call does not cover a thread opened from a
@@ -127,7 +146,9 @@ async function runRefreshOnce(): Promise<void> {
  * rejects; resolves when this run (plus a coalesced re-run, if one was asked
  * for while it was in flight) has settled.
  */
-export function refreshBlockedContent(): Promise<void> {
+export function refreshBlockedContent(options?: { tail?: 'keep' | 'drop' }): Promise<void> {
+  if (options?.tail === 'drop') queuedTail = 'drop';
+
   if (inflight) {
     rerunRequested = true;
     return inflight;
@@ -155,6 +176,7 @@ export function refreshBlockedContent(): Promise<void> {
     } finally {
       inflight = null;
       rerunRequested = false;
+      queuedTail = 'keep';
     }
   })();
 
@@ -172,13 +194,17 @@ export function refreshBlockedContent(): Promise<void> {
  * that import — one microtask later than the state change, which is the price
  * of keeping the store writes synchronous — and only gates the refetch.
  */
-async function settleThenRefresh(settled: Promise<void>, op: string): Promise<void> {
+async function settleThenRefresh(
+  settled: Promise<void>,
+  op: string,
+  tail: 'keep' | 'drop',
+): Promise<void> {
   try {
     const { captureSession, isSessionStale } = await import('./conversationService');
     const session = captureSession();
     await settled;
     if (!session || isSessionStale(session)) return;
-    await refreshBlockedContent();
+    await refreshBlockedContent({ tail });
   } catch (e) {
     if (__DEV__) {
       console.warn(
@@ -204,7 +230,8 @@ export function blockUserAndRefresh(userId: string, username: string): Promise<v
   const settled = store.blockUser(userId, username);
   store.removeMediaForAuthor(userId);
 
-  return settleThenRefresh(settled, 'block');
+  // Keeps the walked tail: see `queuedTail`.
+  return settleThenRefresh(settled, 'block', 'keep');
 }
 
 /**
@@ -217,5 +244,6 @@ export function blockUserAndRefresh(userId: string, username: string): Promise<v
 export function unblockUserAndRefresh(userId: string): Promise<void> {
   const settled = useAppStore.getState().unblockUser(userId);
 
-  return settleThenRefresh(settled, 'unblock');
+  // Reopens the list: the author's rows can return anywhere in it.
+  return settleThenRefresh(settled, 'unblock', 'drop');
 }

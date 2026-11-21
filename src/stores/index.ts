@@ -9,7 +9,12 @@ export { useAppStore } from './useAppStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from './useAppStore';
 import { resolveDmPeerId } from '../utils/dmPeer';
-import type { Contact, MediaItem, TypingEntry } from '../types/store';
+import type {
+  Contact,
+  MediaItem,
+  ThreadListPagingState,
+  TypingEntry,
+} from '../types/store';
 
 export const useAuth = () =>
   useAppStore(useShallow((s) => ({
@@ -65,6 +70,9 @@ export const useThreads = () =>
     activeThreadId: s.activeThreadId,
     threadLastViewedAt: s.threadLastViewedAt,
     setThreads: s.setThreads,
+    mergeThreads: s.mergeThreads,
+    trimThreadsToHead: s.trimThreadsToHead,
+    cacheThreadEntities: s.cacheThreadEntities,
     upsertThread: s.upsertThread,
     removeThread: s.removeThread,
     setActiveThread: s.setActiveThread,
@@ -170,6 +178,39 @@ export const useGroupKeyGeneration = (groupId: string | null): number =>
     for (const n of Object.values(s.groupKeyGeneration)) total += n;
     return total;
   });
+
+/**
+ * The paging slot a conversation's list has, or a shared empty one (#923).
+ *
+ * Returns the RAW slot — the same object identity `threadListWalk` wrote — so
+ * zustand's default `Object.is` comparison is correct and a screen re-renders
+ * exactly when its own slot changes. A `useShallow` over the whole record
+ * would wake every list screen on any conversation's walk.
+ *
+ * The fallback is a module-level FROZEN constant, never a fresh object literal
+ * per call: a new `{…}` on every render would fail `Object.is` every time and
+ * re-render the list on every unrelated store write.
+ */
+const EMPTY_THREAD_LIST_PAGING: ThreadListPagingState = Object.freeze({
+  hasMore: false,
+  loadingMore: false,
+  loadMoreFailed: false,
+  totalCount: 0,
+  // A conversation with no walk has never reopened one. A screen comparing
+  // this against its own last-seen value therefore sees no change when the
+  // slot disappears (a leave), which is right: a leave is an unmount, not a
+  // scroll-to-top.
+  reopenCount: 0,
+});
+
+export const useThreadListPagingState = (
+  conversationId: string | null,
+): ThreadListPagingState =>
+  useAppStore((s) =>
+    conversationId === null
+      ? EMPTY_THREAD_LIST_PAGING
+      : (s.threadListPaging[conversationId] ?? EMPTY_THREAD_LIST_PAGING),
+  );
 
 /**
  * Scoped selector for media items attached to a specific thread.

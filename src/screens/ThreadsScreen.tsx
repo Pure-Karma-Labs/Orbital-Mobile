@@ -34,7 +34,11 @@ import { OrbitBar } from './threads/OrbitBar';
 import { SearchBar } from './threads/SearchBar';
 import { ThreadItem } from './threads/ThreadItem';
 import { OnboardingEmptyState } from './threads/OnboardingEmptyState';
-import { loadThreadsForGroup, hydrateThreadsFromLocal } from '../services/threadService';
+import {
+  loadThreadsForGroup,
+  hydrateThreadsFromLocal,
+  ensureThreadEntitiesCached,
+} from '../services/threadService';
 import { markConversationReadEverywhere } from '../services/conversationService';
 import {
   GroupKeyFailureNotice,
@@ -44,17 +48,20 @@ import { useGroupKeyLoadState } from '../hooks/useGroupKeyLoadState';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
+import {
+  useThreadListPaging,
+  THREAD_LIST_MVCP,
+  THREAD_LIST_REMOVE_CLIPPED_SUBVIEWS,
+} from '../hooks/useThreadListPaging';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { getThreadState } from '../utils/threadState';
-import { compareThreadsByActivityDesc, threadActivityAt } from '../utils/threadActivity';
+import { createThreadListRowsCache, type ListRow } from '../utils/threadListRows';
 import {
-  formatDayLabel,
   formatImportDate,
   formatImportDateA11y,
   formatShortTime,
-  localDayKey,
 } from '../utils/formatPostTimestamp';
 import { NO_TITLE_FALLBACK, threadHeadline } from '../utils/threadHeadline';
 import { describeImportedLabel } from './import/importCopy';
@@ -67,59 +74,6 @@ export type ThreadsScreenProps = NativeStackScreenProps<
   ThreadsStackParamList,
   'ThreadsList'
 >;
-
-/** A row in the FlatList can be a thread, a day separator, or a section separator */
-type DaySeparatorRow = { type: 'day'; label: string; key: string };
-type SectionSeparatorRow = { type: 'section'; key: string };
-type ThreadRow = { type: 'thread'; thread: Thread; key: string };
-type ListRow = DaySeparatorRow | SectionSeparatorRow | ThreadRow;
-
-// ---------------------------------------------------------------------------
-// Build flat list rows from threads, grouping by day
-// ---------------------------------------------------------------------------
-
-function buildListRows(threads: Thread[]): ListRow[] {
-  if (threads.length === 0) {
-    return [];
-  }
-
-  // Sort by most recent activity (the newer of createdAt and lastReplyAt)
-  // descending. The shared comparator is total: it never returns NaN, it sorts
-  // a thread with no valid timestamp last, and it breaks ties on createdAt then
-  // id so the order is stable across re-sorts (#883).
-  const sorted = [...threads].sort(compareThreadsByActivityDesc);
-
-  const rows: ListRow[] = [];
-  let lastDayKey: string | null = null;
-  let groupIndex = 0;
-
-  for (const thread of sorted) {
-    // Group and label by activity, so the day headers agree with the row order.
-    // The row's own clock time still shows its creation time.
-    const activityTime = threadActivityAt(thread);
-    const dayKey = localDayKey(activityTime);
-    // An unrenderable timestamp has no day, so it opens no group and closes
-    // none: it joins whatever group it lands in. Letting '' through would both
-    // render a bare `───  ───` and split a real day in two, re-emitting its
-    // `day-<key>` (a duplicate FlatList key) and an extra section row.
-    if (dayKey !== '' && dayKey !== lastDayKey) {
-      // Insert section separator between day groups (not before first group)
-      if (lastDayKey !== null) {
-        rows.push({ type: 'section', key: `section-${groupIndex}` });
-        groupIndex++;
-      }
-      rows.push({
-        type: 'day',
-        label: formatDayLabel(activityTime),
-        key: `day-${dayKey}`,
-      });
-      lastDayKey = dayKey;
-    }
-    rows.push({ type: 'thread', thread, key: `thread-${thread.id}` });
-  }
-
-  return rows;
-}
 
 /**
  * What a screen reader says about an imported row (#927), folded into the
@@ -288,6 +242,14 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   const { searchText, setSearchText, resultThreadIds, isSearching, clearSearch } =
     useSQLiteSearch(activeConversationId);
 
+  /**
+   * One rows cache per mounted screen (#923). A walked orbit is long enough
+   * that re-sorting it on every `threads` map write misses the frame budget on
+   * Hermes; the cache reuses the sorted order when a page only APPENDED rows.
+   * See `createThreadListRowsCache`.
+   */
+  const rowsCache = useRef(createThreadListRowsCache()).current;
+
   // Build list rows: flat when searching (no day separators), grouped when not
   const listRows = useMemo((): ListRow[] => {
     if (isSearching) {
@@ -301,13 +263,61 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
           key: `thread-${thread.id}`,
         }));
     }
-    return buildListRows(threadList);
-  }, [isSearching, resultThreadIds, threads, threadList, blockedSet]);
+    return rowsCache(threadList);
+  }, [isSearching, resultThreadIds, threads, threadList, blockedSet, rowsCache]);
 
-  // Scroll to top when entering/exiting search mode
+  /**
+   * Scroll to the top when ENTERING search, and only then (#923).
+   *
+   * Exiting used to scroll too, which threw away a walked list's position:
+   * the member scrolled minutes' worth of imported posts, searched, came back,
+   * and was at the head again with no way back down but another walk.
+   */
   useEffect(() => {
+    if (!isSearching) return;
     flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
   }, [isSearching]);
+
+  /**
+   * Search reaches every CACHED row, including rows whose entity a leave-trim
+   * dropped from the store (#923). FTS still has their ids, so without this
+   * the result row would have no thread to render. Entities only — never the
+   * list — so a trimmed tail row does not reappear behind the search overlay.
+   */
+  useEffect(() => {
+    if (!isSearching || resultThreadIds.length === 0) return;
+    ensureThreadEntitiesCached(resultThreadIds);
+  }, [isSearching, resultThreadIds]);
+
+  /**
+   * A reopen dropped the walked tail out from under this list (#923 review):
+   * an own import settling, an unblock, or an `INVALID_CURSOR`. The member was
+   * reading rows that no longer exist, and is left clamped at the END of the
+   * head page — where this screen's ungated `onEndReached` would re-walk every
+   * page it just dropped. Back to the top, without an animation: the rows that
+   * were under the viewport are gone, so there is no motion to explain.
+   *
+   * Null-safe by design: the empty and search branches do not mount the list,
+   * and a list that mounts later starts at the top anyway.
+   */
+  const handleTailDropped = useCallback((): void => {
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, []);
+
+  /**
+   * Load-more (#923). Orbits do NOT gate on a first scroll: `onEndReached`
+   * firing on a content-size change is exactly the auto-fill a short orbit
+   * list wants, and an orbit is where the imports are.
+   */
+  const paging = useThreadListPaging({
+    conversationId: activeConversationId,
+    // THREAD rows, not list rows: day and section separators cannot be what a
+    // page added, and counting them would read as growth that never happened.
+    renderedCount: threadList.length,
+    filtersActive: blockedSet.size > 0,
+    disabled: isSearching,
+    onTailDropped: handleTailDropped,
+  });
 
   /**
    * Group-key state for the active orbit (#912). `keyPending` is the transient
@@ -340,6 +350,18 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     hydrateThreadsFromLocal(activeConversationId);
   }, [activeConversationId]);
 
+  /**
+   * The orbit this effect last issued a load for (#923).
+   *
+   * The effect has TWO triggers and they want opposite things from the walked
+   * tail. An orbit CHANGE is an open: the list belongs to a different orbit,
+   * so the previous walk's tail is dropped with its cursor (`tail: 'drop'`). A
+   * key-heal rerun is the same orbit re-reading its head page, and dropping
+   * the tail there would yank the member back to the top of a list they had
+   * walked (`tail: 'keep'`).
+   */
+  const loadedConversationRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!activeConversationId) return;
     // The id this load was issued FOR. Every state write below is gated on it
@@ -347,9 +369,11 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     // and a late settle from the orbit the user just left must not write its
     // verdict onto the one they are looking at.
     const target = activeConversationId;
+    const isReopen = loadedConversationRef.current !== target;
+    loadedConversationRef.current = target;
     const isStale = (): boolean =>
       useAppStore.getState().activeConversationId !== target;
-    loadThreadsForGroup(target)
+    loadThreadsForGroup(target, { tail: isReopen ? 'drop' : 'keep' })
       .then(() => {
         if (isStale()) return;
         // Cleared only on success: clearing at the START of the load would
@@ -420,7 +444,10 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
       !mountedRef.current || useAppStore.getState().activeConversationId !== target;
     setRefreshing(true);
     try {
-      await loadThreadsForGroup(target);
+      // KEEP, explicitly (#923): a pull is "show me what is new at the head",
+      // not "start over". Whatever the member walked to stays listed, and the
+      // walk keeps its cursor.
+      await loadThreadsForGroup(target, { tail: 'keep' });
       if (!isStale()) clearKeyState();
     } catch (e) {
       if (__DEV__)
@@ -494,6 +521,14 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     flexGrow: 1,
   };
 
+  /** The empty-but-`hasMore` body (#923): the footer, centred, nothing else. */
+  const pagingEmptyStyle: ViewStyle = {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing.xl,
+  };
+
   const handleCreateOrbit = useCallback(() => {
     navigation.push('CreateOrbit');
   }, [navigation]);
@@ -561,6 +596,18 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
               <View style={{ flex: 1 }} testID="group-key-pending-body" />
             ) : keyFailureMessage !== null ? (
               <GroupKeyFailureNotice message={keyFailureMessage} />
+            ) : paging.hasMore ? (
+              // #923: nothing rendered, but the server says there is more —
+              // a head page of nothing but blocked authors, typically. "No
+              // threads yet" would be a lie about an orbit full of threads,
+              // and the list is not mounted here so `onEndReached` can never
+              // fire: the hook's own auto-fill walks, and this shows its
+              // spinner, then its "Load more" row if it stops short.
+              // Ordered AFTER the key notices, which are about this orbit
+              // being unreadable rather than about what is in it.
+              <View style={pagingEmptyStyle} testID="threads-paging-empty">
+                {paging.footer}
+              </View>
             ) : (
               <EmptyState onCompose={handleCompose} />
             )
@@ -583,7 +630,16 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
                 }
                 {...scrollProps}
                 keyboardShouldPersistTaps="handled"
-                removeClippedSubviews
+                ListFooterComponent={paging.footer}
+                onEndReached={paging.onEndReached}
+                onEndReachedThreshold={0.3}
+                // A walk page sorts OLDER than what is on screen, so it extends
+                // the list downward — but a head refresh landing mid-walk, or a
+                // reply bumping a thread, inserts above the viewport. Anchoring
+                // on row 0 keeps the member's place. Safe on this list because
+                // it has no ListHeaderComponent (#923 / #821).
+                maintainVisibleContentPosition={THREAD_LIST_MVCP}
+                removeClippedSubviews={THREAD_LIST_REMOVE_CLIPPED_SUBVIEWS}
                 initialNumToRender={10}
                 maxToRenderPerBatch={5}
                 windowSize={5}

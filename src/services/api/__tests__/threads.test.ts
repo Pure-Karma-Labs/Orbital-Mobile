@@ -81,6 +81,49 @@ describe('getGroupThreads', () => {
   });
 });
 
+describe('getGroupThreads cursor (#923)', () => {
+  it('sends no before on a head request', async () => {
+    await getGroupThreads('group-abc', { sort: 'activity_desc' });
+
+    const callArg = mockRequest.mock.calls[0][0];
+    expect(callArg.path).not.toContain('before=');
+  });
+
+  it('passes before, url-encoded, alongside the walk sort and limit', async () => {
+    // A real cursor is base64url, but `+`/`=` must survive a hostile or
+    // future encoding unchanged — the server re-encodes and compares.
+    await getGroupThreads('group-abc', {
+      sort: 'created_desc',
+      limit: 100,
+      before: 'a+b=c/d',
+    });
+
+    const callArg = mockRequest.mock.calls[0][0];
+    expect(callArg.path).toContain('sort=created_desc');
+    expect(callArg.path).toContain('limit=100');
+    expect(callArg.path).toContain(`before=${encodeURIComponent('a+b=c/d')}`);
+    expect(callArg.path).not.toContain('offset=');
+  });
+
+  it('opts a walk page out of the 429 retry', async () => {
+    await getGroupThreads(
+      'group-abc',
+      { sort: 'created_desc', limit: 100, before: 'cursor-1' },
+      { retryOn429: false },
+    );
+
+    expect(mockRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ retryOn429: false }),
+    );
+  });
+
+  it('leaves the retry default alone for a head request', async () => {
+    await getGroupThreads('group-abc', { sort: 'activity_desc' });
+
+    expect(mockRequest.mock.calls[0][0]).not.toHaveProperty('retryOn429');
+  });
+});
+
 describe('getThread', () => {
   it('calls GET /api/threads/:id', async () => {
     await getThread('thread-1');

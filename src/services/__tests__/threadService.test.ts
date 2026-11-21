@@ -9,7 +9,8 @@
 jest.mock('../../database/repositories/threadRepository', () => ({
   saveThread: jest.fn(),
   saveThreadBatch: jest.fn(),
-  getThreadsForConversation: jest.fn(() => []),
+  getRecentThreadsForConversation: jest.fn(() => []),
+  getThreadsByIds: jest.fn(() => []),
   getThread: jest.fn(() => null),
 }));
 
@@ -77,6 +78,13 @@ const mockReconcileReplies = jest.fn(() => [] as string[]);
 const mockAddOptimisticThread = jest.fn();
 const mockRemoveThread = jest.fn();
 const mockSetThreads = jest.fn();
+// #923 — the additive paging half of the slice, plus the paging slot the walk
+// module is the single writer of.
+const mockMergeThreads = jest.fn(() => 0);
+const mockTrimThreadsToHead = jest.fn();
+const mockCacheThreadEntities = jest.fn();
+const mockSetThreadListPaging = jest.fn();
+const mockClearThreadListPagingSlot = jest.fn();
 const mockUpdateThreadSyncStatus = jest.fn();
 const mockBumpLastMessageAt = jest.fn();
 
@@ -99,6 +107,12 @@ jest.mock('../../stores/useAppStore', () => ({
       addOptimisticThread: mockAddOptimisticThread,
       removeThread: mockRemoveThread,
       setThreads: mockSetThreads,
+      mergeThreads: mockMergeThreads,
+      trimThreadsToHead: mockTrimThreadsToHead,
+      cacheThreadEntities: mockCacheThreadEntities,
+      setThreadListPaging: mockSetThreadListPaging,
+      clearThreadListPaging: mockClearThreadListPagingSlot,
+      threadListPaging: {},
       updateThreadSyncStatus: mockUpdateThreadSyncStatus,
       bumpLastMessageAt: mockBumpLastMessageAt,
       // #906 review: the request-ordering token the recency reconcile reads.
@@ -118,13 +132,14 @@ jest.mock('../../stores/useAppStore', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, createNewThread, reconcileThreadReplies, applyReplyToParentThread, getKnownThreadAuthorId } from '../threadService';
-import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation, getThread as dbGetThread } from '../../database/repositories/threadRepository';
+import { loadThread, loadReplies, postReply, hydrateThreadsFromLocal, hydrateRepliesFromLocal, loadThreadsForGroup, loadMoreThreadsForGroup, leaveThreadList, ensureThreadEntitiesCached, createNewThread, reconcileThreadReplies, applyReplyToParentThread, getKnownThreadAuthorId } from '../threadService';
+import { saveThread as dbSaveThread, saveThreadBatch, getRecentThreadsForConversation, getThreadsByIds, getThread as dbGetThread } from '../../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../../database/repositories/replyRepository';
 import { isDatabaseInitialized } from '../../database/connection';
 import { getMedia, getMediaForReply } from '../../database/repositories/mediaRepository';
 import { teardownLocalMedia } from '../media/mediaTeardown';
-import { ServerError } from '../api/errors';
+import { RateLimitError, ServerError, ValidationError } from '../api/errors';
+import * as Sentry from '@sentry/react-native';
 import { PendingWrapError } from '../crypto/contentCrypto';
 import { getThread, getGroupThreads, getThreadReplies, createReply, createThread } from '../api/threads';
 import {
@@ -132,6 +147,7 @@ import {
   encryptContent,
   getOrFetchGroupKey,
 } from '../crypto/contentCrypto';
+import { clearThreadListPaging, peekWalk } from '../threadListWalk';
 import { makeThread } from '../../testUtils/makeThread';
 import type { ThreadResponse, ReplyResponse, ListRepliesResponse, CreateReplyResponse, CreateThreadResponse, ListThreadsResponse, ThreadListItem } from '../../types/api';
 import type { Thread, Conversation, Contact } from '../../types/store';
@@ -147,7 +163,8 @@ const mockGetOrFetchGroupKey = getOrFetchGroupKey as jest.MockedFunction<typeof 
 
 const mockDbSaveThread = dbSaveThread as jest.MockedFunction<typeof dbSaveThread>;
 const mockSaveThreadBatch = saveThreadBatch as jest.MockedFunction<typeof saveThreadBatch>;
-const mockGetThreadsForConversation = getThreadsForConversation as jest.MockedFunction<typeof getThreadsForConversation>;
+const mockGetRecentThreadsForConversation = getRecentThreadsForConversation as jest.MockedFunction<typeof getRecentThreadsForConversation>;
+const mockGetThreadsByIds = getThreadsByIds as jest.MockedFunction<typeof getThreadsByIds>;
 const mockDbGetThread = dbGetThread as jest.MockedFunction<typeof dbGetThread>;
 const mockDbSaveReply = dbSaveReply as jest.MockedFunction<typeof dbSaveReply>;
 const mockSaveReplyBatch = saveReplyBatch as jest.MockedFunction<typeof saveReplyBatch>;
@@ -224,6 +241,7 @@ function makeThreadListItem(overrides: Partial<ThreadListItem> = {}): ThreadList
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockMergeThreads.mockReturnValue(0);
   mockIsDatabaseInitialized.mockReturnValue(true);
   const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
     useAppStore: { getState: jest.Mock };
@@ -247,6 +265,12 @@ beforeEach(() => {
     addOptimisticThread: mockAddOptimisticThread,
     removeThread: mockRemoveThread,
     setThreads: mockSetThreads,
+    mergeThreads: mockMergeThreads,
+    trimThreadsToHead: mockTrimThreadsToHead,
+    cacheThreadEntities: mockCacheThreadEntities,
+    setThreadListPaging: mockSetThreadListPaging,
+    clearThreadListPaging: mockClearThreadListPagingSlot,
+    threadListPaging: {},
     updateThreadSyncStatus: mockUpdateThreadSyncStatus,
     bumpLastMessageAt: mockBumpLastMessageAt,
     // #908: see the factory mock above — the blocked-DM-peer derivation slices.
@@ -255,6 +279,12 @@ beforeEach(() => {
     blockedUserIds: [],
     blockedUserProfiles: {},
   });
+  // #923: the walk map is module state. Without this, one test's walked tail
+  // makes the next test's `loadThreadsForGroup` merge instead of replace. It
+  // runs AFTER the store mock above, because it writes through the slice.
+  clearThreadListPaging();
+  mockSetThreadListPaging.mockClear();
+  mockClearThreadListPagingSlot.mockClear();
   mockGetOrFetchGroupKey.mockResolvedValue(fakeGroupKey);
   mockDecryptContent.mockImplementation((ciphertext: string) => {
     if (ciphertext.includes('title')) return 'Decrypted Title';
@@ -1229,7 +1259,7 @@ describe('persistence write-through', () => {
 // ---------------------------------------------------------------------------
 
 describe('hydration', () => {
-  it('hydrateThreadsFromLocal calls getThreadsForConversation and populates store', () => {
+  it('hydrateThreadsFromLocal reads the BOUNDED local page and populates store (#923)', () => {
     const fakeThreads = [
       makeThread({
         id: 'thread-1',
@@ -1247,7 +1277,7 @@ describe('hydration', () => {
         syncStatus: 'synced',
       }),
     ];
-    mockGetThreadsForConversation.mockReturnValueOnce(fakeThreads);
+    mockGetRecentThreadsForConversation.mockReturnValueOnce(fakeThreads);
 
     const mockSetThreads = jest.fn();
     const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
@@ -1268,12 +1298,12 @@ describe('hydration', () => {
 
     hydrateThreadsFromLocal('conv-1');
 
-    expect(mockGetThreadsForConversation).toHaveBeenCalledWith('conv-1');
+    expect(mockGetRecentThreadsForConversation).toHaveBeenCalledWith('conv-1', 200);
     expect(mockSetThreads).toHaveBeenCalledWith('conv-1', fakeThreads);
   });
 
   it('hydrateThreadsFromLocal returns without store update when DB returns empty', () => {
-    mockGetThreadsForConversation.mockReturnValueOnce([]);
+    mockGetRecentThreadsForConversation.mockReturnValueOnce([]);
 
     // Do NOT queue a getState once-value here: hydrateThreadsFromLocal guards
     // behind `threads.length > 0`, so getState() is never called on the empty
@@ -1324,7 +1354,7 @@ describe('hydration', () => {
   });
 
   it('hydrateThreadsFromLocal swallows errors', () => {
-    mockGetThreadsForConversation.mockImplementationOnce(() => { throw new Error('DB error'); });
+    mockGetRecentThreadsForConversation.mockImplementationOnce(() => { throw new Error('DB error'); });
 
     expect(() => hydrateThreadsFromLocal('conv-1')).not.toThrow();
   });
@@ -1340,7 +1370,7 @@ describe('hydration', () => {
 
     hydrateThreadsFromLocal('conv-1');
 
-    expect(mockGetThreadsForConversation).not.toHaveBeenCalled();
+    expect(mockGetRecentThreadsForConversation).not.toHaveBeenCalled();
   });
 
   it('hydrateRepliesFromLocal no-ops when database not initialized', () => {
@@ -1383,6 +1413,53 @@ function setStoreThreads(threads: Record<string, Thread>): void {
   useAppStore.getState.mockReturnValue({ ...current, threads });
 }
 
+/**
+ * Install a counting view of the store's `conversations` map.
+ *
+ * `conversationGate` is the ONLY reader of that slice on the thread-list page
+ * path, so a property getter counts gate resolutions exactly — which is the
+ * #927 invariant: the gate is a property of the conversation, not of the row,
+ * so it is resolved once per PAGE no matter how many rows the page carries.
+ */
+function countConversationGateReads(
+  conversations: Record<string, Conversation>,
+): () => number {
+  const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+    useAppStore: { getState: jest.Mock };
+  };
+  const current = useAppStore.getState();
+  let reads = 0;
+  // `defineProperty` on a copy, NOT a getter inside an object literal: Babel
+  // compiles `{ ...spread, get x() {} }` by READING the getter once into a
+  // plain value, which silently turns this counter into a constant 1 — it
+  // passed a per-row mutation of the code under test before this was found.
+  const state: Record<string, unknown> = { ...current };
+  Object.defineProperty(state, 'conversations', {
+    get: () => {
+      reads += 1;
+      return conversations;
+    },
+  });
+  useAppStore.getState.mockReturnValue(state);
+  return () => reads;
+}
+
+/** An orbit row, the gate answer that makes import flags readable. */
+function orbitConversation(): Conversation {
+  return {
+    id: 'group-1',
+    type: 'group',
+    name: 'Family',
+    memberCount: 3,
+    active: true,
+    lastMessageAt: null,
+    unreadCount: 0,
+    lastReadAt: null,
+    createdAt: 900,
+    updatedAt: 1000,
+  };
+}
+
 /** Simulate a block/unblock landing: the generation token moves (#906 review). */
 function setStoreBlockedGeneration(generation: number): void {
   const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
@@ -1391,6 +1468,110 @@ function setStoreBlockedGeneration(generation: number): void {
   const current = useAppStore.getState();
   useAppStore.getState.mockReturnValue({ ...current, blockedUsersGeneration: generation });
 }
+
+// ---------------------------------------------------------------------------
+// One page, two paths (#923)
+//
+// `fetchAndApplyThreadPage` is the SINGLE pipeline behind the head refresh and
+// every load-more page, and #883 / #897 / #906 are per-PAGE invariants — so the
+// describes below run each case against BOTH paths. The modes differ only in
+// how a page is requested and how it is written:
+//
+//  - head refresh: `{ sort: 'activity_desc' }`, two arguments, and the list is
+//    REPLACED (`setThreads`);
+//  - load-more page: `{ sort: 'created_desc', limit: 100 }` (plus `before` once
+//    a cursor exists) with `{ retryOn429: false }`, merged ADDITIVELY
+//    (`mergeThreads`) onto an already-open walk.
+//
+// The helpers these share with the #923 section at the end of the file live
+// here because the parametrised describes run first.
+// ---------------------------------------------------------------------------
+
+/** One page of the list route, with the fields the walk reads. */
+function listPage(overrides: Partial<ListThreadsResponse> = {}): ListThreadsResponse {
+  return {
+    threads: [makeThreadListItem()],
+    totalCount: 1,
+    hasMore: false,
+    ...overrides,
+  };
+}
+
+/** Open a conversation whose server has cursors and more rows than one page. */
+async function openWalkedList(headIds: string[] = ['head-1']): Promise<void> {
+  mockGetGroupThreads.mockResolvedValueOnce(
+    listPage({
+      threads: headIds.map((id) => makeThreadListItem({ threadId: id })),
+      totalCount: 500,
+      hasMore: true,
+      nextCursor: 'head-cursor',
+    }),
+  );
+  await loadThreadsForGroup('group-1');
+  // The open itself replaced the list; tests here assert what the WALK does.
+  mockGetGroupThreads.mockClear();
+  mockSetThreads.mockClear();
+  mockMergeThreads.mockClear();
+  mockTrimThreadsToHead.mockClear();
+  mockSaveThreadBatch.mockClear();
+}
+
+/** The arguments of the Nth getGroupThreads call. */
+function listCall(index = 0): unknown[] {
+  return mockGetGroupThreads.mock.calls[index] as unknown as unknown[];
+}
+
+/** The rows the Nth mergeThreads call was handed. */
+function mergedRows(index = 0): Thread[] {
+  const call = mockMergeThreads.mock.calls[index] as unknown as [string, Thread[], unknown];
+  return call[1];
+}
+
+/** One way of fetching and applying a single thread-list page. */
+interface ThreadPageMode {
+  /** Names the mode in every parametrised test. */
+  name: string;
+  /** Put the conversation into the state this mode pages from. */
+  open: () => Promise<void>;
+  /** Fetch ONE page; resolves with the rows the service applied. */
+  load: (groupId: string) => Promise<Thread[]>;
+  /** The store write this mode makes — authoritative on both paths (#897). */
+  write: jest.Mock;
+  /** The full getGroupThreads argument list one page of this mode sends. */
+  callArgs: (groupId: string) => unknown[];
+  /** Whether a page that straddled a block is discarded whole (#906). */
+  discardsOnBlockedChange: boolean;
+}
+
+const THREAD_PAGE_MODES: ThreadPageMode[] = [
+  {
+    name: 'head refresh',
+    // Nothing to open: the head page IS the open.
+    open: () => Promise.resolve(),
+    load: (groupId) => loadThreadsForGroup(groupId),
+    write: mockSetThreads,
+    callArgs: (groupId) => [groupId, { sort: 'activity_desc' }],
+    discardsOnBlockedChange: false,
+  },
+  {
+    name: 'load-more page',
+    open: () => openWalkedList(),
+    load: async (groupId) => {
+      const result = await loadMoreThreadsForGroup(groupId);
+      // Asserted here so a case can never pass on a page that was silently
+      // skipped: every parametrised case below is about an APPLIED page.
+      expect(result.status).toBe('loaded');
+      return mergedRows();
+    },
+    write: mockMergeThreads,
+    callArgs: (groupId) => [
+      groupId,
+      { sort: 'created_desc', limit: 100 },
+      { retryOn429: false },
+    ],
+    discardsOnBlockedChange: true,
+  },
+];
 
 describe('#883 loadThread recency merge', () => {
   it('keeps the store lastReplyAt when the server OMITS the field', async () => {
@@ -1505,29 +1686,28 @@ describe('#883 loadThread recency merge', () => {
   });
 });
 
-describe('#883 loadThreadsForGroup', () => {
-  it('requests the activity_desc sort', async () => {
-    mockGetGroupThreads.mockResolvedValue({
-      threads: [makeThreadListItem()],
-      totalCount: 1,
-      hasMore: false,
-    });
+describe.each(THREAD_PAGE_MODES)('#883 thread list page — $name', (mode) => {
+  beforeEach(() => mode.open());
 
-    await loadThreadsForGroup('group-1');
+  it('requests the sort this page mode is defined by', async () => {
+    // The head page is `activity_desc` (#883): both screens order by latest
+    // activity, so the server's page has to be the most ACTIVE threads. The
+    // walk runs on `created_desc` instead — its cursor is a creation position,
+    // and the head cursor is bound to the other sort — and opts out of the 429
+    // retry, because the member taps to retry a parked walk.
+    mockGetGroupThreads.mockResolvedValue(listPage());
 
-    expect(mockGetGroupThreads).toHaveBeenCalledWith('group-1', {
-      sort: 'activity_desc',
-    });
+    await mode.load('group-1');
+
+    expect(listCall()).toEqual(mode.callArgs('group-1'));
   });
 
   it('maps an unparseable list lastReplyAt to null, never NaN', async () => {
-    mockGetGroupThreads.mockResolvedValue({
-      threads: [makeThreadListItem({ lastReplyAt: 'garbage' })],
-      totalCount: 1,
-      hasMore: false,
-    });
+    mockGetGroupThreads.mockResolvedValue(
+      listPage({ threads: [makeThreadListItem({ lastReplyAt: 'garbage' })] }),
+    );
 
-    const threads = await loadThreadsForGroup('group-1');
+    const threads = await mode.load('group-1');
 
     expect(threads[0].lastReplyAt).toBeNull();
   });
@@ -1538,7 +1718,9 @@ describe('#883 loadThreadsForGroup', () => {
     // before that reply) carries null/0. Only the pre-request snapshot can
     // tell this apart from a per-viewer lowering (#897) — and the pair has to
     // move together, or the slot and the count disagree. saveThreadBatch is
-    // INSERT OR REPLACE, so the live pair must reach SQLite too.
+    // INSERT OR REPLACE, so the live pair must reach SQLite too. The snapshot
+    // is taken per PAGE, so a walk page protects a mid-request reply exactly
+    // as the head refresh does.
     setStoreThreads({
       'thread-1': makeStoredThread({ lastReplyAt: 1000, replyCount: 4 }),
     });
@@ -1546,21 +1728,19 @@ describe('#883 loadThreadsForGroup', () => {
       setStoreThreads({
         'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 5 }),
       });
-      return {
+      return listPage({
         threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })],
-        totalCount: 1,
-        hasMore: false,
-      };
+      });
     });
 
-    const threads = await loadThreadsForGroup('group-1');
+    const threads = await mode.load('group-1');
 
     expect(threads[0].lastReplyAt).toBe(9000);
     expect(threads[0].replyCount).toBe(5);
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchThreads[0].lastReplyAt).toBe(9000);
     expect(batchThreads[0].replyCount).toBe(5);
-    expect(mockSetThreads).toHaveBeenCalledWith(
+    expect(mode.write).toHaveBeenCalledWith(
       'group-1',
       [expect.objectContaining({ lastReplyAt: 9000, replyCount: 5 })],
       { authoritativeRecency: true },
@@ -1568,40 +1748,34 @@ describe('#883 loadThreadsForGroup', () => {
   });
 
   it('falls back to the SQLite row for the batch merge when the field is omitted', async () => {
-    // Seeded TWICE: on the cold-open path (no conversation row yet) the
-    // import carry-forward reads the same row before the recency merge does
-    // (#927), so a single `Once` would be consumed by the wrong caller.
-    mockDbGetThread
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
-    mockGetGroupThreads.mockResolvedValue({
+    // TWO readers, two mocks (#923): the cold-open import carry-forward still
+    // reads one row at a time (`dbGetThread`), while the page's recency
+    // fallback is now ONE batched read for every row the store does not hold.
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetThreadsByIds.mockReturnValueOnce([makeStoredThread({ lastReplyAt: 7000 })]);
+    mockGetGroupThreads.mockResolvedValue(
       // Explicitly omitted: the fixture default is `null`, which is now an
       // authoritative "no counted reply" rather than "not sent" (#897).
-      threads: [makeThreadListItem({ lastReplyAt: undefined })],
-      totalCount: 1,
-      hasMore: false,
-    });
+      listPage({ threads: [makeThreadListItem({ lastReplyAt: undefined })] }),
+    );
 
-    await loadThreadsForGroup('group-1');
+    await mode.load('group-1');
 
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchThreads[0].lastReplyAt).toBe(7000);
   });
 
   it('lets an explicit null lower a batch value that exists only on disk (#897)', async () => {
-    // Seeded TWICE: on the cold-open path (no conversation row yet) the
-    // import carry-forward reads the same row before the recency merge does
-    // (#927), so a single `Once` would be consumed by the wrong caller.
-    mockDbGetThread
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
-    mockGetGroupThreads.mockResolvedValue({
-      threads: [makeThreadListItem({ lastReplyAt: null })],
-      totalCount: 1,
-      hasMore: false,
-    });
+    // TWO readers, two mocks (#923): the cold-open import carry-forward still
+    // reads one row at a time (`dbGetThread`), while the page's recency
+    // fallback is now ONE batched read for every row the store does not hold.
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetThreadsByIds.mockReturnValueOnce([makeStoredThread({ lastReplyAt: 7000 })]);
+    mockGetGroupThreads.mockResolvedValue(
+      listPage({ threads: [makeThreadListItem({ lastReplyAt: null })] }),
+    );
 
-    await loadThreadsForGroup('group-1');
+    await mode.load('group-1');
 
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchThreads[0].lastReplyAt).toBeNull();
@@ -1612,7 +1786,11 @@ describe('#883 loadThreadsForGroup', () => {
 // #897 — a per-viewer server value may LOWER the stored recency
 // ---------------------------------------------------------------------------
 
-describe('#897 loadThreadsForGroup authoritative recency', () => {
+describe.each(THREAD_PAGE_MODES)(
+  '#897 thread list page authoritative recency — $name',
+  (mode) => {
+  beforeEach(() => mode.open());
+
   it('stores the server null over a higher local value when nothing moved mid-request', async () => {
     // THE ISSUE: blocking the member whose reply lifted thread-1 drops that
     // reply from this viewer's last_reply_at/reply_count (Backend #306). The
@@ -1621,20 +1799,20 @@ describe('#897 loadThreadsForGroup authoritative recency', () => {
     setStoreThreads({
       'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 5 }),
     });
-    mockGetGroupThreads.mockResolvedValue({
-      threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })],
-      totalCount: 1,
-      hasMore: false,
-    });
+    mockGetGroupThreads.mockResolvedValue(
+      listPage({ threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })] }),
+    );
 
-    const threads = await loadThreadsForGroup('group-1');
+    const threads = await mode.load('group-1');
 
     expect(threads[0].lastReplyAt).toBeNull();
     expect(threads[0].replyCount).toBe(0);
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchThreads[0].lastReplyAt).toBeNull();
     expect(batchThreads[0].replyCount).toBe(0);
-    expect(mockSetThreads).toHaveBeenCalledWith(
+    // The recency decision was made against the pre-request snapshot, so the
+    // slice is told not to re-apply its never-lower merge — on either path.
+    expect(mode.write).toHaveBeenCalledWith(
       'group-1',
       [expect.objectContaining({ lastReplyAt: null, replyCount: 0 })],
       { authoritativeRecency: true },
@@ -1650,22 +1828,22 @@ describe('#897 loadThreadsForGroup authoritative recency', () => {
         replyCount: 5,
       }),
     });
-    mockGetGroupThreads.mockResolvedValue({
-      threads: [
-        makeThreadListItem({ lastReplyAt: '2026-04-01T11:00:00Z', replyCount: 3 }),
-      ],
-      totalCount: 1,
-      hasMore: false,
-    });
+    mockGetGroupThreads.mockResolvedValue(
+      listPage({
+        threads: [
+          makeThreadListItem({ lastReplyAt: '2026-04-01T11:00:00Z', replyCount: 3 }),
+        ],
+      }),
+    );
 
-    const threads = await loadThreadsForGroup('group-1');
+    const threads = await mode.load('group-1');
 
     expect(threads[0].lastReplyAt).toBe(older);
     expect(threads[0].replyCount).toBe(3);
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchThreads[0].lastReplyAt).toBe(older);
     expect(batchThreads[0].replyCount).toBe(3);
-    expect(mockSetThreads).toHaveBeenCalledWith(
+    expect(mode.write).toHaveBeenCalledWith(
       'group-1',
       [expect.objectContaining({ lastReplyAt: older, replyCount: 3 })],
       { authoritativeRecency: true },
@@ -1684,13 +1862,9 @@ describe('#897 loadThreadsForGroup authoritative recency', () => {
     Object.defineProperty(item, 'threadId', {
       get: () => (idReads++ === 0 ? 'thread-ghost' : 'thread-1'),
     });
-    mockGetGroupThreads.mockResolvedValue({
-      threads: [item],
-      totalCount: 1,
-      hasMore: false,
-    });
+    mockGetGroupThreads.mockResolvedValue(listPage({ threads: [item] }));
 
-    const threads = await loadThreadsForGroup('group-1');
+    const threads = await mode.load('group-1');
 
     expect(threads[0].id).toBe('thread-1');
     expect(threads[0].lastReplyAt).toBe(9000);
@@ -1703,61 +1877,154 @@ describe('#897 loadThreadsForGroup authoritative recency', () => {
 // #906 review — a block landing MID-REQUEST makes the response unusable
 // ---------------------------------------------------------------------------
 
-describe('#906 blocked-set generation guard', () => {
-  it('keeps the live row when the blocked set changed during loadThreadsForGroup', async () => {
+describe.each(THREAD_PAGE_MODES)(
+  '#906 blocked-set generation guard — $name',
+  (mode) => {
+  beforeEach(() => mode.open());
+
+  /**
+   * A walk page whose request straddled a block: nothing applied, cursor
+   * intact. The head refresh has no such branch — it applies the page with the
+   * live row kept — so the two paths part company here, and only here.
+   */
+  async function expectWalkPageDiscarded(): Promise<void> {
+    const before = peekWalk('group-1');
+
+    const result = await loadMoreThreadsForGroup('group-1');
+
+    expect(result).toEqual({ status: 'skipped', newIdCount: 0, hasMore: true });
+    // NOTHING was applied — not the store, not SQLite — and the walk is byte
+    // for byte where it started (cursor, tail and all), so the same page is
+    // re-requested next time.
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockSaveThreadBatch).not.toHaveBeenCalled();
+    expect(peekWalk('group-1')).toEqual(before);
+  }
+
+  it('protects the live row from a blocked-set change during the request', async () => {
     // The response left the server BEFORE the block, so its per-viewer values
     // are pre-block and must not be written authoritatively. Nothing moved in
     // the store, so only the generation token can tell.
+    //
+    // The head refresh still applies the page, keeping the live 9000/5 pair. A
+    // WALK page is thrown away whole instead: the server filtered it for the
+    // pre-block viewer, so it may carry rows that are now blocked, and
+    // appending them would need a second pass to remove.
     setStoreThreads({
       'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 5 }),
     });
     mockGetGroupThreads.mockImplementationOnce(async () => {
       setStoreBlockedGeneration(1);
-      return {
+      return listPage({
         threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })],
-        totalCount: 1,
-        hasMore: false,
-      };
+      });
     });
 
-    const threads = await loadThreadsForGroup('group-1');
+    if (mode.discardsOnBlockedChange) {
+      await expectWalkPageDiscarded();
+      return;
+    }
+
+    const threads = await mode.load('group-1');
 
     expect(threads[0].lastReplyAt).toBe(9000);
     expect(threads[0].replyCount).toBe(5);
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchThreads[0].lastReplyAt).toBe(9000);
     expect(batchThreads[0].replyCount).toBe(5);
-    expect(mockSetThreads).toHaveBeenCalledWith(
+    expect(mode.write).toHaveBeenCalledWith(
       'group-1',
       [expect.objectContaining({ lastReplyAt: 9000, replyCount: 5 })],
       { authoritativeRecency: true },
     );
   });
 
-  it('falls back to the never-lower merge when the generation changed and there is no live row', async () => {
-    // Nothing live to keep, so the disk row is protected by the legacy path
-    // and the refresh that bumped the generation supplies the real values.
-    // Seeded TWICE: on the cold-open path (no conversation row yet) the
-    // import carry-forward reads the same row before the recency merge does
-    // (#927), so a single `Once` would be consumed by the wrong caller.
-    mockDbGetThread
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }))
-      .mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+  it('handles a generation change with no live row to keep', async () => {
+    // Head: nothing live to keep, so the disk row is protected by the legacy
+    // never-lower path and the refresh that bumped the generation supplies the
+    // real values. Walk: the discard is unconditional — a straddling page goes
+    // whether or not a live row exists, so the disk fallback never runs at all.
     mockGetGroupThreads.mockImplementationOnce(async () => {
       setStoreBlockedGeneration(1);
-      return {
+      return listPage({
         threads: [makeThreadListItem({ lastReplyAt: null, replyCount: 0 })],
-        totalCount: 1,
-        hasMore: false,
-      };
+      });
     });
 
-    await loadThreadsForGroup('group-1');
+    if (mode.discardsOnBlockedChange) {
+      await expectWalkPageDiscarded();
+      return;
+    }
+
+    // TWO readers, two mocks (#923): the cold-open import carry-forward still
+    // reads one row at a time (`dbGetThread`), while the page's recency
+    // fallback is now ONE batched read for every row the store does not hold.
+    // Queued only on the path that consumes them: an unconsumed `Once` would
+    // survive `clearAllMocks` and leak into the next test.
+    mockDbGetThread.mockReturnValueOnce(makeStoredThread({ lastReplyAt: 7000 }));
+    mockGetThreadsByIds.mockReturnValueOnce([makeStoredThread({ lastReplyAt: 7000 })]);
+
+    await mode.load('group-1');
 
     const [, batchThreads] = mockSaveThreadBatch.mock.calls[0];
     expect(batchThreads[0].lastReplyAt).toBe(7000);
   });
+});
 
+// The single-thread detail path has no pages and no walk, so it stays
+// unparametrised: `loadThread` takes the same snapshot for ONE row.
+// ---------------------------------------------------------------------------
+// #927 — ONE conversation gate per page, on both paths
+//
+// The gate decides whether a server-flagged row may display as an import, and
+// it is a property of the CONVERSATION. Resolving it per row was the original
+// shape; a 100-row walk page would do that 100 times, and a future gate that
+// reads SQLite would do it 100 times there. The invariant held on the
+// load-more path only by shared code, so it is asserted on both.
+// ---------------------------------------------------------------------------
+
+describe.each(THREAD_PAGE_MODES)('#927 one conversation gate per page — $name', (mode) => {
+  beforeEach(() => mode.open());
+
+  it('resolves the gate ONCE, however many rows the page carries', async () => {
+    const gateReads = countConversationGateReads({ 'group-1': orbitConversation() });
+    mockGetGroupThreads.mockResolvedValue(
+      listPage({
+        threads: ['row-1', 'row-2', 'row-3', 'row-4'].map((id) =>
+          makeThreadListItem({ threadId: id, isImport: true }),
+        ),
+        totalCount: 4,
+        hasMore: true,
+        nextCursor: 'cursor-2',
+      }),
+    );
+
+    const threads = await mode.load('group-1');
+
+    expect(threads).toHaveLength(4);
+    expect(gateReads()).toBe(1);
+  });
+
+  it('still resolves it once when the page has a single row', async () => {
+    // The counter would read 1 per row as well on a one-row page, so the
+    // multi-row case above is the one that can fail — this pins the floor.
+    const gateReads = countConversationGateReads({ 'group-1': orbitConversation() });
+    mockGetGroupThreads.mockResolvedValue(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'row-1', isImport: true })],
+        totalCount: 1,
+        hasMore: true,
+        nextCursor: 'cursor-2',
+      }),
+    );
+
+    await mode.load('group-1');
+
+    expect(gateReads()).toBe(1);
+  });
+});
+
+describe('#906 blocked-set generation guard (loadThread)', () => {
   it('keeps the live row when the blocked set changed during loadThread', async () => {
     setStoreThreads({
       'thread-1': makeStoredThread({ lastReplyAt: 9000, replyCount: 5 }),
@@ -1987,6 +2254,12 @@ describe('#908 blocked DM peer refuses the send', () => {
       addOptimisticThread: mockAddOptimisticThread,
       removeThread: mockRemoveThread,
       setThreads: mockSetThreads,
+      mergeThreads: mockMergeThreads,
+      trimThreadsToHead: mockTrimThreadsToHead,
+      cacheThreadEntities: mockCacheThreadEntities,
+      setThreadListPaging: mockSetThreadListPaging,
+      clearThreadListPaging: mockClearThreadListPagingSlot,
+      threadListPaging: {},
       updateThreadSyncStatus: mockUpdateThreadSyncStatus,
       bumpLastMessageAt: mockBumpLastMessageAt,
       blockedUsersGeneration: 0,
@@ -2639,5 +2912,718 @@ describe('#927 import display mapping', () => {
       expect(created.importSource).toBeNull();
       expect(created.mediaCount).toBe(0);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #923 — cursor paging
+//
+// `listPage`, `openWalkedList` and `listCall` live further up the file: the
+// parametrised #883/#897/#906 describes drive a load-more page through them.
+// ---------------------------------------------------------------------------
+
+describe('#923 loadMoreThreadsForGroup', () => {
+  it('sends created_desc with no before on the walk first page, opted out of the 429 retry', async () => {
+    // The head cursor is bound to `activity_desc`; the walk runs on
+    // `created_desc`, so its first page has to start from the top.
+    await openWalkedList();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true, nextCursor: 'cursor-2' }),
+    );
+
+    const result = await loadMoreThreadsForGroup('group-1');
+
+    expect(listCall()).toEqual([
+      'group-1',
+      { sort: 'created_desc', limit: 100 },
+      { retryOn429: false },
+    ]);
+    expect(result.status).toBe('loaded');
+    expect(result.hasMore).toBe(true);
+  });
+
+  it('sends before only once a page has returned a nextCursor', async () => {
+    await openWalkedList();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true, nextCursor: 'cursor-2' }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-2' })], hasMore: true, nextCursor: 'cursor-3' }),
+    );
+
+    await loadMoreThreadsForGroup('group-1');
+
+    expect(listCall(1)).toEqual([
+      'group-1',
+      { sort: 'created_desc', limit: 100, before: 'cursor-2' },
+      { retryOn429: false },
+    ]);
+  });
+
+  it('merges the page additively and reports the new-id count', async () => {
+    await openWalkedList();
+    mockMergeThreads.mockReturnValue(3);
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true, nextCursor: 'cursor-2' }),
+    );
+
+    const result = await loadMoreThreadsForGroup('group-1');
+
+    expect(mockMergeThreads).toHaveBeenCalledWith(
+      'group-1',
+      [expect.objectContaining({ id: 'tail-1' })],
+      { authoritativeRecency: true },
+    );
+    expect(mockSetThreads).not.toHaveBeenCalled();
+    expect(result.newIdCount).toBe(3);
+  });
+
+  it('is single-flight: a second call joins the page already in flight', async () => {
+    await openWalkedList();
+    let release: (value: ListThreadsResponse) => void = () => {};
+    mockGetGroupThreads.mockImplementationOnce(
+      () => new Promise<ListThreadsResponse>((resolve) => { release = resolve; }),
+    );
+
+    const first = loadMoreThreadsForGroup('group-1');
+    const second = loadMoreThreadsForGroup('group-1');
+    release(listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: false }));
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(mockGetGroupThreads).toHaveBeenCalledTimes(1);
+    expect(a).toBe(b);
+  });
+
+  it('skips a conversation whose list was never opened', async () => {
+    const result = await loadMoreThreadsForGroup('group-never-opened');
+
+    expect(mockGetGroupThreads).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 'skipped', newIdCount: 0, hasMore: false });
+  });
+
+  it('a 429 parks the walk without chaining another request', async () => {
+    await openWalkedList();
+    mockGetGroupThreads.mockRejectedValueOnce(new RateLimitError());
+
+    const result = await loadMoreThreadsForGroup('group-1');
+
+    expect(result).toEqual({ status: 'rate-limited', newIdCount: 0, hasMore: true });
+    expect(mockGetGroupThreads).toHaveBeenCalledTimes(1);
+    // Still retryable, and the cursor is intact: the footer offers a tap.
+    expect(peekWalk('group-1')).toMatchObject({ status: 'rate-limited', failed: true });
+  });
+
+  it('rethrows any other failure with the footer already marked failed', async () => {
+    await openWalkedList();
+    mockGetGroupThreads.mockRejectedValueOnce(new ServerError(500));
+
+    await expect(loadMoreThreadsForGroup('group-1')).rejects.toBeInstanceOf(ServerError);
+
+    expect(peekWalk('group-1')).toMatchObject({ status: 'idle', failed: true });
+  });
+
+  it('discards a page whose request straddled a block, keeping the cursor (#906)', async () => {
+    await openWalkedList();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true, nextCursor: 'cursor-2' }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+    mockMergeThreads.mockClear();
+    mockSaveThreadBatch.mockClear();
+    mockGetGroupThreads.mockImplementationOnce(async () => {
+      setStoreBlockedGeneration(1);
+      return listPage({
+        threads: [makeThreadListItem({ threadId: 'tail-2' })],
+        hasMore: true,
+        nextCursor: 'cursor-3',
+      });
+    });
+
+    const result = await loadMoreThreadsForGroup('group-1');
+
+    expect(result).toEqual({ status: 'skipped', newIdCount: 0, hasMore: true });
+    // NOTHING was applied — not the store, not SQLite — and the walk did not
+    // advance, so the same page is re-requested next time.
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockSaveThreadBatch).not.toHaveBeenCalled();
+    expect(peekWalk('group-1')).toMatchObject({ status: 'idle', hasCursor: true, tailSize: 1 });
+  });
+});
+
+describe('#923 no-cursor fallback', () => {
+  it('offers no load-more when the server reports more rows without a cursor', async () => {
+    // A pre-Backend#313 server: behaviour is exactly what it was before #923.
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ totalCount: 500, hasMore: true }),
+    );
+    await loadThreadsForGroup('group-1');
+    mockGetGroupThreads.mockClear();
+
+    const result = await loadMoreThreadsForGroup('group-1');
+
+    expect(mockGetGroupThreads).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 'unsupported', newIdCount: 0, hasMore: false });
+  });
+
+  it('ends the walk on hasMore false, which is the only end signal', async () => {
+    await openWalkedList();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: false }),
+    );
+
+    const loaded = await loadMoreThreadsForGroup('group-1');
+    expect(loaded).toMatchObject({ status: 'loaded', hasMore: false });
+
+    mockGetGroupThreads.mockClear();
+    const again = await loadMoreThreadsForGroup('group-1');
+
+    expect(mockGetGroupThreads).not.toHaveBeenCalled();
+    expect(again).toEqual({ status: 'exhausted', newIdCount: 0, hasMore: false });
+  });
+
+  it('a walk page that claims more rows without a cursor stops the walk', async () => {
+    await openWalkedList();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true }),
+    );
+
+    const result = await loadMoreThreadsForGroup('group-1');
+
+    expect(result).toMatchObject({ status: 'loaded', hasMore: false });
+    expect(peekWalk('group-1')?.status).toBe('unsupported');
+  });
+});
+
+describe('#923 head refresh keeps the walked tail', () => {
+  async function walkOnce(): Promise<void> {
+    await openWalkedList();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true, nextCursor: 'cursor-2' }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+    mockGetGroupThreads.mockClear();
+    mockSetThreads.mockClear();
+    mockMergeThreads.mockClear();
+  }
+
+  it('merges the head page and keeps the cursor when a tail exists', async () => {
+    await walkOnce();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'head-1' })], totalCount: 501, hasMore: true, nextCursor: 'head-cursor-2' }),
+    );
+
+    await loadThreadsForGroup('group-1');
+
+    // The request is UNCHANGED from the pre-#923 one.
+    expect(listCall()).toEqual(['group-1', { sort: 'activity_desc' }]);
+    expect(mockMergeThreads).toHaveBeenCalledWith(
+      'group-1',
+      [expect.objectContaining({ id: 'head-1' })],
+      { authoritativeRecency: true },
+    );
+    expect(mockSetThreads).not.toHaveBeenCalled();
+    // The walk is untouched: same cursor, same tail.
+    expect(peekWalk('group-1')).toMatchObject({ hasCursor: true, tailSize: 1, status: 'idle' });
+  });
+
+  it('an explicit tail: keep behaves the same', async () => {
+    await walkOnce();
+    mockGetGroupThreads.mockResolvedValueOnce(listPage({ totalCount: 500, hasMore: true, nextCursor: 'x' }));
+
+    await loadThreadsForGroup('group-1', { tail: 'keep' });
+
+    expect(mockMergeThreads).toHaveBeenCalled();
+    expect(peekWalk('group-1')?.tailSize).toBe(1);
+  });
+
+  it('a refresh never re-enables an exhausted walk from the head response', async () => {
+    await openWalkedList();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: false }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+    mockGetGroupThreads.mockClear();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor-2' }),
+    );
+
+    await loadThreadsForGroup('group-1');
+
+    expect(peekWalk('group-1')?.status).toBe('exhausted');
+  });
+});
+
+describe('#923 open and reopen', () => {
+  it('replaces on a first open, with no walk to keep', async () => {
+    mockGetGroupThreads.mockResolvedValueOnce(listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor' }));
+
+    await loadThreadsForGroup('group-1');
+
+    expect(mockSetThreads).toHaveBeenCalled();
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockTrimThreadsToHead).not.toHaveBeenCalled();
+  });
+
+  it('tail: drop trims the store to the head page BEFORE the request and replaces after', async () => {
+    await openWalkedList(['head-1']);
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true, nextCursor: 'cursor-2' }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+    mockGetGroupThreads.mockClear();
+    mockSetThreads.mockClear();
+    mockMergeThreads.mockClear();
+    mockGetGroupThreads.mockResolvedValueOnce(listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor-2' }));
+
+    await loadThreadsForGroup('group-1', { tail: 'drop' });
+
+    expect(mockTrimThreadsToHead).toHaveBeenCalledWith('group-1', ['head-1']);
+    expect(mockSetThreads).toHaveBeenCalled();
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(peekWalk('group-1')).toMatchObject({ tailSize: 0, hasCursor: false, status: 'idle' });
+  });
+
+  it('tail: keep with no walked tail still replaces — there is nothing to keep', async () => {
+    mockGetGroupThreads.mockResolvedValueOnce(listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor' }));
+    await loadThreadsForGroup('group-1');
+    mockGetGroupThreads.mockClear();
+    mockSetThreads.mockClear();
+    mockGetGroupThreads.mockResolvedValueOnce(listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor-2' }));
+
+    await loadThreadsForGroup('group-1', { tail: 'keep' });
+
+    expect(mockSetThreads).toHaveBeenCalled();
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+  });
+
+  it('leaveThreadList forgets the walk and trims the tail out of the store', async () => {
+    await openWalkedList(['head-1']);
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true, nextCursor: 'cursor-2' }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+
+    leaveThreadList('group-1');
+
+    expect(mockTrimThreadsToHead).toHaveBeenCalledWith('group-1', ['head-1']);
+    expect(peekWalk('group-1')).toBeNull();
+    expect(mockSetThreadListPaging).toHaveBeenLastCalledWith('group-1', null);
+  });
+
+  it('leaveThreadList is a no-op for a conversation with no walk', () => {
+    leaveThreadList('group-never-opened');
+
+    expect(mockTrimThreadsToHead).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #923 review — the reopen signal the list screens scroll on
+// ---------------------------------------------------------------------------
+
+describe('#923 reopen signal', () => {
+  /** The reopenCount the paging slot carries after the last write. */
+  function reopenCount(): number {
+    const calls = mockSetThreadListPaging.mock.calls as unknown as [string, unknown][];
+    const last = calls[calls.length - 1][1] as { reopenCount: number } | null;
+    if (last === null) throw new Error('the slot was cleared, not written');
+    return last.reopenCount;
+  }
+
+  async function headPage(options?: { tail?: 'keep' | 'drop' }): Promise<void> {
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'head-1' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'head-cursor-2',
+      }),
+    );
+    await loadThreadsForGroup('group-1', options);
+  }
+
+  async function walkOnce(): Promise<void> {
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'tail-1' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'cursor-2',
+      }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+  }
+
+  it('moves when a tail: drop refresh trims rows from under the list', async () => {
+    await openWalkedList(['head-1']);
+    await walkOnce();
+    expect(reopenCount()).toBe(0);
+
+    await headPage({ tail: 'drop' });
+
+    expect(reopenCount()).toBe(1);
+  });
+
+  it('does not move on a first open, or on a drop with nothing walked', async () => {
+    await openWalkedList(['head-1']);
+    expect(reopenCount()).toBe(0);
+
+    await headPage({ tail: 'drop' });
+
+    expect(reopenCount()).toBe(0);
+  });
+
+  it('does not move on a refresh that keeps the walked tail', async () => {
+    await openWalkedList(['head-1']);
+    await walkOnce();
+
+    await headPage();
+
+    expect(reopenCount()).toBe(0);
+  });
+
+  it('moves on the INVALID_CURSOR reopen, which trims the same rows', async () => {
+    await openWalkedList(['head-1']);
+    await walkOnce();
+    mockGetGroupThreads.mockRejectedValueOnce(
+      new ValidationError(400, JSON.stringify({ details: { code: 'INVALID_CURSOR' } })),
+    );
+
+    await loadMoreThreadsForGroup('group-1');
+
+    expect(reopenCount()).toBe(1);
+  });
+});
+
+describe('#923 response validation', () => {
+  it.each([
+    ['threads is not an array', { threads: null as unknown as ThreadListItem[], totalCount: 0, hasMore: false }],
+    ['threads is missing', { totalCount: 0, hasMore: false } as unknown as ListThreadsResponse],
+    ['hasMore is missing', { threads: [], totalCount: 0 } as unknown as ListThreadsResponse],
+    ['hasMore is not a boolean', { threads: [], totalCount: 0, hasMore: 'yes' as unknown as boolean }],
+  ])('throws and applies nothing when %s', async (_label, body) => {
+    mockGetGroupThreads.mockResolvedValueOnce(body as ListThreadsResponse);
+
+    await expect(loadThreadsForGroup('group-1')).rejects.toThrow(/malformed thread list response/);
+
+    expect(mockSetThreads).not.toHaveBeenCalled();
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockSaveThreadBatch).not.toHaveBeenCalled();
+    // A malformed 200 must not read as "the list ends here" either.
+    expect(peekWalk('group-1')).toBeNull();
+  });
+
+  it('a malformed walk page leaves the cursor untouched', async () => {
+    await openWalkedList();
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true, nextCursor: 'cursor-2' }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+    mockGetGroupThreads.mockResolvedValueOnce({ threads: [], totalCount: 1 } as unknown as ListThreadsResponse);
+
+    await expect(loadMoreThreadsForGroup('group-1')).rejects.toThrow(/malformed thread list response/);
+
+    expect(peekWalk('group-1')).toMatchObject({ status: 'idle', hasCursor: true, failed: true, tailSize: 1 });
+  });
+});
+
+describe('#923 INVALID_CURSOR reopen', () => {
+  function invalidCursor(): ValidationError {
+    return new ValidationError(400, JSON.stringify({ details: { code: 'INVALID_CURSOR' } }));
+  }
+
+  async function walkOnePage(): Promise<void> {
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ threads: [makeThreadListItem({ threadId: 'tail-1' })], hasMore: true, nextCursor: 'cursor-2' }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+  }
+
+  it('returns the list to its head and keeps paging available', async () => {
+    await openWalkedList(['head-1']);
+    await walkOnePage();
+    mockTrimThreadsToHead.mockClear();
+    mockGetGroupThreads.mockRejectedValueOnce(invalidCursor());
+
+    const result = await loadMoreThreadsForGroup('group-1');
+
+    expect(result).toEqual({ status: 'reopened', newIdCount: 0, hasMore: true });
+    expect(mockTrimThreadsToHead).toHaveBeenCalledWith('group-1', ['head-1']);
+    expect(peekWalk('group-1')).toMatchObject({ tailSize: 0, hasCursor: false, status: 'idle' });
+  });
+
+  it('stops paging after the second one in the same viewing', async () => {
+    await openWalkedList(['head-1']);
+    await walkOnePage();
+    mockGetGroupThreads.mockRejectedValueOnce(invalidCursor());
+    await loadMoreThreadsForGroup('group-1');
+    await walkOnePage();
+    mockGetGroupThreads.mockRejectedValueOnce(invalidCursor());
+
+    const result = await loadMoreThreadsForGroup('group-1');
+
+    expect(result).toEqual({ status: 'unsupported', newIdCount: 0, hasMore: false });
+    mockGetGroupThreads.mockClear();
+    await loadMoreThreadsForGroup('group-1');
+    expect(mockGetGroupThreads).not.toHaveBeenCalled();
+  });
+
+  it('never carries the cursor into the breadcrumb', async () => {
+    await openWalkedList();
+    await walkOnePage();
+    mockGetGroupThreads.mockRejectedValueOnce(invalidCursor());
+
+    await loadMoreThreadsForGroup('group-1');
+
+    const serialized = JSON.stringify(
+      (Sentry.addBreadcrumb as jest.Mock).mock.calls,
+    );
+    expect(serialized).not.toContain('cursor-2');
+    expect(serialized).toContain('thread-list');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #923 review — a page in flight across a reopen or a leave
+//
+// A request cannot be cancelled. Before the walk epoch, a page that landed
+// after the list was reopened (own-import settle, unblock, INVALID_CURSOR) or
+// left was still merged: it re-added the rows the reopen had just dropped and
+// adopted a cursor from a walk that no longer existed, leaving a hole in the
+// list until the next leave — or, after a leave, re-listed up to 100 rows that
+// nothing would ever trim.
+// ---------------------------------------------------------------------------
+
+describe('#923 a page in flight across a reset', () => {
+  /** A load-more whose response this test releases by hand. */
+  function deferWalkPage(): {
+    settle: (body: ListThreadsResponse) => void;
+    fail: (e: Error) => void;
+  } {
+    let settle: (body: ListThreadsResponse) => void = () => {};
+    let fail: (e: Error) => void = () => {};
+    mockGetGroupThreads.mockImplementationOnce(
+      () =>
+        new Promise<ListThreadsResponse>((resolve, reject) => {
+          settle = resolve;
+          fail = reject;
+        }),
+    );
+    return { settle: (body) => settle(body), fail: (e) => fail(e) };
+  }
+
+  /** The page the walk was asking for — one row beyond the head. */
+  function walkPageBody(): ListThreadsResponse {
+    return listPage({
+      threads: [makeThreadListItem({ threadId: 'tail-1' })],
+      totalCount: 500,
+      hasMore: true,
+      nextCursor: 'deep-cursor',
+    });
+  }
+
+  /** The slot the walk last wrote for this conversation. */
+  function lastSlot(): Record<string, unknown> {
+    const calls = mockSetThreadListPaging.mock.calls as unknown as [string, unknown][];
+    return calls[calls.length - 1][1] as Record<string, unknown>;
+  }
+
+  it('drops a page superseded by a tail: drop reopen, cursor and rows together', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const page = loadMoreThreadsForGroup('group-1');
+
+    // The reopen lands first: an own import settling, or an unblock.
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'head-1' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'head-cursor-2',
+      }),
+    );
+    await loadThreadsForGroup('group-1', { tail: 'drop' });
+    mockMergeThreads.mockClear();
+    mockSaveThreadBatch.mockClear();
+
+    pending.settle(walkPageBody());
+    const result = await page;
+
+    expect(result).toEqual({ status: 'skipped', newIdCount: 0, hasMore: true });
+    // Nothing applied — not the store, not SQLite — so the reopened list is
+    // still exactly its head page.
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockSaveThreadBatch).not.toHaveBeenCalled();
+    // And the deep cursor was NOT adopted: the walk is back at its start.
+    expect(peekWalk('group-1')).toMatchObject({
+      tailSize: 0,
+      hasCursor: false,
+      status: 'idle',
+      failed: false,
+    });
+    expect(lastSlot()).toMatchObject({ loadingMore: false, loadMoreFailed: false });
+  });
+
+  it('drops a page superseded by leaveThreadList, re-listing nothing', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const page = loadMoreThreadsForGroup('group-1');
+
+    leaveThreadList('group-1');
+    mockMergeThreads.mockClear();
+    mockSaveThreadBatch.mockClear();
+
+    pending.settle(walkPageBody());
+    const result = await page;
+
+    expect(result).toEqual({ status: 'skipped', newIdCount: 0, hasMore: false });
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockSaveThreadBatch).not.toHaveBeenCalled();
+    // The walk stays forgotten: a late page must not resurrect a slot for a
+    // list no screen is showing.
+    expect(peekWalk('group-1')).toBeNull();
+    expect(mockSetThreadListPaging).toHaveBeenLastCalledWith('group-1', null);
+  });
+
+  it('drops a page superseded by a leave AND a re-open of the same conversation', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const page = loadMoreThreadsForGroup('group-1');
+
+    leaveThreadList('group-1');
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'head-1' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'head-cursor',
+      }),
+    );
+    await loadThreadsForGroup('group-1');
+    mockMergeThreads.mockClear();
+    mockSaveThreadBatch.mockClear();
+
+    pending.settle(walkPageBody());
+    const result = await page;
+
+    expect(result.status).toBe('skipped');
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockSaveThreadBatch).not.toHaveBeenCalled();
+    expect(peekWalk('group-1')).toMatchObject({
+      tailSize: 0,
+      hasCursor: false,
+      status: 'idle',
+      failed: false,
+    });
+    // The NEW walk is neither stuck loading nor wearing the old page's
+    // failure: the footer of the re-opened list is clean.
+    expect(lastSlot()).toMatchObject({ loadingMore: false, loadMoreFailed: false });
+  });
+
+  it('swallows the failure of a superseded page instead of marking the new walk failed', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const page = loadMoreThreadsForGroup('group-1');
+
+    leaveThreadList('group-1');
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor' }),
+    );
+    await loadThreadsForGroup('group-1');
+
+    pending.fail(new ServerError(500));
+
+    await expect(page).resolves.toEqual({ status: 'skipped', newIdCount: 0, hasMore: true });
+    expect(peekWalk('group-1')).toMatchObject({ failed: false, status: 'idle' });
+  });
+
+  it('a superseded page does not take the new walk out of loading', async () => {
+    // The stale page settles while the REPLACEMENT walk has a page of its own
+    // in flight. Discarding it as if it were ours (#906's path) would clear
+    // `loadingMore` under a spinner that is still waiting for its response.
+    await openWalkedList(['head-1']);
+    const stalePage = deferWalkPage();
+    const stale = loadMoreThreadsForGroup('group-1');
+
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor-2' }),
+    );
+    await loadThreadsForGroup('group-1', { tail: 'drop' });
+
+    const freshPage = deferWalkPage();
+    const fresh = loadMoreThreadsForGroup('group-1');
+    expect(peekWalk('group-1')?.status).toBe('loading');
+
+    stalePage.settle(walkPageBody());
+    await expect(stale).resolves.toMatchObject({ status: 'skipped' });
+
+    expect(peekWalk('group-1')?.status).toBe('loading');
+    expect(lastSlot()).toMatchObject({ loadingMore: true, loadMoreFailed: false });
+
+    freshPage.settle(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'tail-9' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'cursor-9',
+      }),
+    );
+    await expect(fresh).resolves.toMatchObject({ status: 'loaded' });
+  });
+
+  it('a reopen frees the single-flight slot, so the new walk can page at once', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const stale = loadMoreThreadsForGroup('group-1');
+
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor-2' }),
+    );
+    await loadThreadsForGroup('group-1', { tail: 'drop' });
+
+    // The new walk's first page goes out while the stale one is still open.
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'tail-9' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'cursor-9',
+      }),
+    );
+    const fresh = await loadMoreThreadsForGroup('group-1');
+
+    expect(fresh.status).toBe('loaded');
+    expect(peekWalk('group-1')).toMatchObject({ tailSize: 1, hasCursor: true });
+
+    // …and the stale one settling afterwards still changes nothing.
+    pending.settle(walkPageBody());
+    await expect(stale).resolves.toMatchObject({ status: 'skipped' });
+    expect(peekWalk('group-1')).toMatchObject({ tailSize: 1, hasCursor: true });
+  });
+});
+
+describe('#923 search reaches rows outside the entity map', () => {
+  it('loads missing ids from SQLite and caches them as entities only', () => {
+    const cached = makeStoredThread({ id: 'thread-cold' });
+    mockGetThreadsByIds.mockReturnValueOnce([cached]);
+
+    const count = ensureThreadEntitiesCached(['thread-cold', 'thread-cold']);
+
+    expect(mockGetThreadsByIds).toHaveBeenCalledWith(['thread-cold']);
+    expect(mockCacheThreadEntities).toHaveBeenCalledWith([cached]);
+    expect(count).toBe(1);
+  });
+
+  it('reads nothing when every id is already in the store', () => {
+    setStoreThreads({ 'thread-1': makeStoredThread() });
+
+    expect(ensureThreadEntitiesCached(['thread-1'])).toBe(0);
+    expect(mockGetThreadsByIds).not.toHaveBeenCalled();
+  });
+
+  it('reads nothing for an empty id list', () => {
+    expect(ensureThreadEntitiesCached([])).toBe(0);
+    expect(mockGetThreadsByIds).not.toHaveBeenCalled();
   });
 });

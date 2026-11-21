@@ -151,11 +151,17 @@ const VALIDATION_REASON_MESSAGES = Object.freeze({
  * `IMPORT_ITEM_INVALID` / `IMPORT_DATE_INVALID` / `IMPORT_MEDIA_NOT_OWNED`
  * are in NEITHER registry on purpose: they are per-item codes inside a 200,
  * so they never reach a ValidationError at all.
+ *
+ * `INVALID_CURSOR` (#923) joins them for the same reason: the thread-list walk
+ * routes on it (drop the cursor, return to the head of the list) and the member
+ * sees a list that reloaded, not a sentence about cursors. It is reachable only
+ * from a cursor this client itself sent back.
  */
 const SILENT_VALIDATION_REASONS = Object.freeze({
   IMPORT_BATCH_TOO_LARGE: 1,
   IMPORT_DECLARED_INVALID: 1,
   IMPORT_MEDIA_TYPE_UNSUPPORTED: 1,
+  INVALID_CURSOR: 1,
 });
 
 /**

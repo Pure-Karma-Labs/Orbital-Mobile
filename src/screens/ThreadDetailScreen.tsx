@@ -57,7 +57,7 @@ import {
   dispositionForCreateFailure,
 } from '../services/media/uploadCacheDisposition';
 import { captureUploadFailure, type PostPipelineStage } from '../services/uploadTelemetry';
-import { QuotaExceededError, ValidationError } from '../services/api/errors';
+import { NotFoundError, QuotaExceededError, ValidationError } from '../services/api/errors';
 import { updateMediaParent } from '../database/repositories/mediaRepository';
 import { useMediaPicker } from '../hooks/useMediaPicker';
 import { useMediaUploadProgress } from '../hooks/useMediaUploadProgress';
@@ -167,6 +167,7 @@ export function ThreadDetailScreen({
     replyIdsByThread,
     setActiveThread,
     markThreadViewed,
+    removeThread,
   } = useThreads();
   const { userId, username } = useAuth();
 
@@ -681,6 +682,50 @@ export function ThreadDetailScreen({
   const currentThreadRef = useRef(threadId);
   currentThreadRef.current = threadId;
 
+  // Latest-refs for the dismissal below, which must keep an EMPTY dep array.
+  const removeThreadRef = useRef(removeThread);
+  removeThreadRef.current = removeThread;
+  const navigationRef = useRef(navigation);
+  navigationRef.current = navigation;
+
+  /**
+   * A thread the server no longer has (#923).
+   *
+   * Paging is what makes this routine: once a walk exists, this device keeps
+   * listing rows the server has dropped until the next open, so the tap that
+   * opens one is where the stale row gets reconciled. The row leaves the list
+   * and the screen pops — a 404 has nothing to show and nothing to retry.
+   *
+   * Returns true only when the screen actually POPPED, so each caller's key
+   * routing is skipped rather than reordered: a 404 is not a key verdict.
+   *
+   * With nothing to pop back to — a cold-start deep link or a notification
+   * open, where this screen IS the stack — claiming the error was handled
+   * suppressed the caller's `setError` and left a blank body with no copy and
+   * no way out (#923 review). The removal still stands in that case; only the
+   * verdict is handed back, so the existing "Could not load thread" path
+   * renders.
+   */
+  const dismissMissingThread = useCallback(
+    (target: string, e: unknown): boolean => {
+      if (!(e instanceof NotFoundError)) return false;
+      // Store first, then the pop: the list behind this screen must not paint
+      // the row again on the way out. Unconditional — the row is stale
+      // whether or not there is a screen behind this one.
+      removeThreadRef.current(target);
+      const nav = navigationRef.current;
+      if (!nav.canGoBack()) return false;
+      nav.goBack();
+      return true;
+    },
+    // EMPTY, load-bearing. This helper is in `fetchData`'s dependency chain,
+    // and the mount effect re-runs on `fetchData`'s identity — so taking
+    // `removeThread` or `navigation` as a dependency would re-fetch the thread
+    // on any render that handed back new ones. The store's actions happen to
+    // be stable today; this screen must not depend on that.
+    [],
+  );
+
   const fetchData = useCallback(async () => {
     const target = threadId;
     try {
@@ -711,6 +756,13 @@ export function ThreadDetailScreen({
       // do not. An unmounted screen and a re-pointed one (params-in-place
       // thread switch) both drop the verdict (#940).
       if (!mountedRef.current || currentThreadRef.current !== target) return;
+      // #923: the thread is GONE server-side. Checked before the key routing
+      // because a 404 is not a key problem, and before `setError` because
+      // "Could not load thread" invited a retry of something that will never
+      // load again. Paging makes this reachable: once a walk exists, a row the
+      // server removed stays listed until it is tapped, and this is where it
+      // removes itself.
+      if (dismissMissingThread(target, e)) return;
       // #912: a group-key failure is not "could not load thread". Pending gets
       // the transient banner and suppresses both the error text and the
       // "Be the first to reply" footer; every other outcome gets the copy for
@@ -719,7 +771,14 @@ export function ThreadDetailScreen({
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [threadId, beginPaginationPass, applyRepliesPage, clearKeyState, applyKeyLoadError]);
+  }, [
+    threadId,
+    beginPaginationPass,
+    applyRepliesPage,
+    clearKeyState,
+    applyKeyLoadError,
+    dismissMissingThread,
+  ]);
 
   // Mount/unmount lifecycle
   useEffect(() => {
@@ -831,7 +890,11 @@ export function ThreadDetailScreen({
         console.warn('[ThreadDetail] refresh failed:', e instanceof Error ? e.message : e);
       // Only a `loadThread` rejection is a verdict about the key, and only
       // while this screen is still mounted and still on this thread.
-      if (!isStale()) applyKeyLoadError(e);
+      if (isStale()) return;
+      // A pull on a thread the server no longer has takes the same exit as
+      // the first load (#923).
+      if (dismissMissingThread(target, e)) return;
+      applyKeyLoadError(e);
     } finally {
       if (mountedRef.current) setRefreshing(false);
     }
@@ -842,6 +905,7 @@ export function ThreadDetailScreen({
     applyRepliesPage,
     clearKeyState,
     applyKeyLoadError,
+    dismissMissingThread,
   ]);
 
   // Pagination — load more replies

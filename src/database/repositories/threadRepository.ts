@@ -16,7 +16,7 @@
 import { queryOne, queryMany, execute } from '../queryHelpers';
 import { getDatabase } from '../connection';
 import { isDatabaseInitialized } from '../connection';
-import { toMillis } from '../timestampUnits';
+import { SECONDS_CEILING, toMillis } from '../timestampUnits';
 import type { Thread } from '../../types/store';
 
 // ============================================================
@@ -159,6 +159,12 @@ function mapRowToThread(row: ThreadRow): Thread {
  * Do NOT add LIMIT/OFFSET or any WHERE on created_at here without normalising
  * the unit first.
  *
+ * NO production caller since #923 moved hydration to the bounded read — KEEP
+ * IT: the unbounded read is what a decision needs (pruning reconciles against
+ * every cached row, #923 PR B), and this docstring is where the no-LIMIT rule
+ * lives. Deleting it would leave only the bounded variant and invite the next
+ * caller to bound a read that must not be bounded.
+ *
  * Returns empty array if database is not initialized.
  */
 export function getThreadsForConversation(conversationId: string): Thread[] {
@@ -170,6 +176,125 @@ export function getThreadsForConversation(conversationId: string): Thread[] {
   );
 
   return rows.map(mapRowToThread);
+}
+
+/**
+ * Both thread lists order by ACTIVITY, so a bounded read of them must too
+ * (`utils/threadActivity`: `threadActivityAt` is the newer of `created_at` and
+ * `last_reply_at`). Ordering the LIMIT by `created_at` alone cut an old thread
+ * replied to today out of the placeholder although it renders first — and
+ * offline, where nothing replaces the placeholder, it never appeared at all.
+ *
+ * NORMALISED INLINE, because this is a bounded read over a MIXED-UNIT column:
+ * rows written before #844 hold epoch seconds (see `../timestampUnits`), which
+ * are ~1000x smaller than ms. Comparing the two columns raw would rank a
+ * legacy row's seconds against a current row's ms and make the MAX meaningless;
+ * the ceiling is bound as a parameter (never interpolated) and multiplies a
+ * seconds value up, exactly as `toMillis` does on the way out.
+ *
+ * `last_reply_at` is nullable, and SQLite's scalar `MAX` returns NULL if ANY
+ * argument is NULL — which would sort every thread with no reply last. Hence
+ * the explicit NULL branch to 0 rather than `COALESCE` around the whole thing.
+ *
+ * Ties keep `created_at DESC` after the activity key, mirroring
+ * `compareThreadsByActivityDesc`, so the cut is stable between two rows last
+ * active in the same millisecond.
+ */
+const RECENT_THREADS_ACTIVITY_ORDER = `ORDER BY MAX(
+      CASE WHEN created_at < ? THEN created_at * 1000 ELSE created_at END,
+      CASE
+        WHEN last_reply_at IS NULL THEN 0
+        WHEN last_reply_at < ? THEN last_reply_at * 1000
+        ELSE last_reply_at
+      END
+    ) DESC,
+    CASE WHEN created_at < ? THEN created_at * 1000 ELSE created_at END DESC`;
+
+/**
+ * The most recent `limit` threads for a conversation — the PRE-NETWORK
+ * placeholder `hydrateThreadsFromLocal` paints before the list request lands
+ * (#923).
+ *
+ * "Most recent" means most recently ACTIVE, the order both lists render in:
+ * see {@link RECENT_THREADS_ACTIVITY_ORDER} for the expression and for why the
+ * units are normalised inside it.
+ *
+ * WHY A `LIMIT` IS SAFE HERE AND NOWHERE ELSE. The file-level rule (and the
+ * one on {@link getThreadsForConversation}) forbids LIMIT/OFFSET/WHERE on
+ * these columns because rows written before #844 hold epoch SECONDS, so the
+ * raw SQL order is a hint rather than the mapped order. This read answers that
+ * by normalising both columns in the ORDER BY, so its cut is taken on the same
+ * value the screen sorts by — and it is still a read whose entire output is
+ * replaced by the server's own page a moment later. Nothing is reconciled,
+ * deleted or counted from this result; it exists so the screen is not blank.
+ *
+ * There is still NO range predicate (`WHERE`) on either column, and adding one
+ * needs a backfill migration first — a `WHERE` decides what exists, where a
+ * LIMIT only decides what is painted early.
+ *
+ * Any read that DECIDES something (pruning, reconciliation, export) must keep
+ * using the unbounded one and bound itself on the mapped ms value.
+ *
+ * Returns empty array if database is not initialized.
+ */
+export function getRecentThreadsForConversation(
+  conversationId: string,
+  limit: number,
+): Thread[] {
+  if (!isDatabaseInitialized()) return [];
+  // A non-positive or non-finite limit would otherwise become `LIMIT -1`
+  // (SQLite: no limit at all), silently restoring the unbounded read.
+  if (!Number.isFinite(limit) || limit <= 0) return [];
+
+  const rows = queryMany<ThreadRow>(
+    `SELECT * FROM orbital_threads WHERE conversation_id = ?
+    ${RECENT_THREADS_ACTIVITY_ORDER}
+    LIMIT ?`,
+    [conversationId, SECONDS_CEILING, SECONDS_CEILING, SECONDS_CEILING, Math.floor(limit)],
+  );
+
+  return rows.map(mapRowToThread);
+}
+
+/**
+ * How many ids one `getThreadsByIds` statement binds.
+ *
+ * SQLite's compile-time `SQLITE_MAX_VARIABLE_NUMBER` is 999 on the older
+ * builds this app has shipped against; 200 keeps a wide margin and keeps each
+ * statement's string short enough to parse cheaply.
+ */
+const ID_CHUNK_SIZE = 200;
+
+/**
+ * Read a set of threads by id, in chunks (#923).
+ *
+ * Two callers, both batching a read that used to be per-row: the thread-list
+ * page pipeline's recency fallback (one query per page instead of one per row
+ * that is not already in the store) and the search path, which has to reach
+ * rows the entity map no longer holds after a trim.
+ *
+ * Ids are de-duplicated; unknown ids are simply absent from the result, which
+ * is never longer than `ids`. Order is NOT guaranteed — callers index the
+ * result by id.
+ */
+export function getThreadsByIds(ids: readonly string[]): Thread[] {
+  if (!isDatabaseInitialized()) return [];
+
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return [];
+
+  const out: Thread[] = [];
+  for (let i = 0; i < unique.length; i += ID_CHUNK_SIZE) {
+    const chunk = unique.slice(i, i + ID_CHUNK_SIZE);
+    const placeholders = chunk.map(() => '?').join(', ');
+    const rows = queryMany<ThreadRow>(
+      `SELECT * FROM orbital_threads WHERE id IN (${placeholders})`,
+      chunk,
+    );
+    for (const row of rows) out.push(mapRowToThread(row));
+  }
+
+  return out;
 }
 
 /**

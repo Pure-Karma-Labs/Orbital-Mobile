@@ -24,19 +24,37 @@ import { generateUUID } from '../utils/uuid';
 import { isValidTimestamp, maxTimestamp } from '../utils/threadActivity';
 import { base64ToArrayBuffer } from './crypto/utils';
 import { getMedia, saveMedia, getThreadLevelMedia, getMediaForReply, getMediaForThreadReplies, updateMediaParent } from '../database/repositories/mediaRepository';
-import { saveThread as dbSaveThread, saveThreadBatch, getThreadsForConversation, getThread as dbGetThread } from '../database/repositories/threadRepository';
+import { saveThread as dbSaveThread, saveThreadBatch, getRecentThreadsForConversation, getThreadsByIds, getThread as dbGetThread } from '../database/repositories/threadRepository';
 import { saveReply as dbSaveReply, saveReplyBatch, getRepliesForThread, deleteReply as dbDeleteReply } from '../database/repositories/replyRepository';
 import { mediaRowToItem } from '../database/repositories/mediaMapper';
 import { isDatabaseInitialized } from '../database/connection';
 import { isBlockedAuthor } from './media/exportAccess';
-import { BlockedRecipientError } from './api/errors';
+import { ApiError, BlockedRecipientError, ValidationError } from './api/errors';
+import {
+  applyWalkPage,
+  beginWalkPage,
+  clearWalkInflight,
+  discardWalkPage,
+  failWalkPage,
+  getWalkInflight,
+  hasWalkedTail,
+  isWalkCurrent,
+  leaveWalk,
+  noteInvalidCursor,
+  openWalk,
+  refreshWalk,
+  reopenWalk,
+  setWalkInflight,
+  walkHasMore,
+} from './threadListWalk';
 import { deriveBlockedDmPeer } from '../utils/dmPeer';
 import { resolveMediaPath } from './media/mediaPaths';
 import { teardownLocalMedia } from './media/mediaTeardown';
 import type { ImportSource } from './metaImport/types';
+import type { LoadMoreResult } from './threadListWalk';
 import type { Thread, Reply, MediaItem } from '../types/store';
 import type { MediaRow } from '../database/repositories/mediaRepository';
-import type { ThreadResponse, ThreadListItem, ReplyResponse, MediaMetadata } from '../types/api';
+import type { ThreadResponse, ThreadListItem, ReplyResponse, MediaMetadata, GetGroupThreadsRequest } from '../types/api';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,6 +84,24 @@ function safeDbGetThread(threadId: string): Thread | null {
   } catch (e) {
     if (__DEV__) console.warn('[safeDbGetThread] DB read failed:', e instanceof Error ? e.message : e);
     return null;
+  }
+}
+
+/**
+ * The same guarded read, for a SET of ids (#923).
+ *
+ * One query per list page instead of one per row that is not already in the
+ * store: a 100-row walk page in a cold-started orbit used to mean 100
+ * `safeDbGetThread` calls, each its own statement, inside the page's recency
+ * reconcile. Same failure contract — every outcome collapses to "no rows".
+ */
+function safeDbGetThreadsByIds(ids: readonly string[]): Map<string, Thread> {
+  if (ids.length === 0 || !isDatabaseInitialized()) return new Map();
+  try {
+    return new Map(getThreadsByIds(ids).map((t) => [t.id, t]));
+  } catch (e) {
+    if (__DEV__) console.warn('[safeDbGetThreadsByIds] DB read failed:', e instanceof Error ? e.message : e);
+    return new Map();
   }
 }
 
@@ -1135,17 +1171,70 @@ async function mapThreadListItem(
 // Public API
 // ---------------------------------------------------------------------------
 
+/** Rows one walk page asks for. The server's maximum; its default is 50. */
+const WALK_PAGE_LIMIT = 100;
+
+/** Rows `hydrateThreadsFromLocal` paints before the network answers (#923). */
+const HYDRATE_THREAD_LIMIT = 200;
+
+/** What one applied list page produced. */
+interface ThreadPageResult {
+  /** The reconciled rows, as written to the store. */
+  threads: Thread[];
+  /** RAW server ids on the page — including rows that failed to decrypt. */
+  rawIds: string[];
+  hasMore: boolean;
+  nextCursor?: string;
+  totalCount: number;
+  /** Ids this page ADDED to the conversation's list. */
+  newIdCount: number;
+  /**
+   * True when nothing was applied because the page went stale: the blocked set
+   * moved under it (#906), or the walk it belongs to was superseded (#923).
+   */
+  discarded: boolean;
+}
+
 /**
- * Fetch all threads for a group from the API, decrypt, and populate the store.
+ * Fetch ONE page of a conversation's thread list, decrypt it, reconcile it and
+ * write it — the single pipeline behind both the head refresh and the cursor
+ * walk (#923).
  *
- * Requests `activity_desc` (#883): both screens order by latest activity, so
- * the server's 50-row page has to be the 50 most ACTIVE threads. With the old
- * `created_desc` default, a reply on message #51 of a DM bumped the Chats row
- * but the thread itself dropped out of the page on the next load — it showed
- * at the top from SQLite hydration and then vanished when this list landed.
- * An older backend ignores the value and returns `created_desc`.
+ * The steps are the pre-#923 `loadThreadsForGroup` body in the same order,
+ * because that order IS the contract:
+ *
+ *  1. snapshot `threads` and `blockedUsersGeneration` BEFORE the request —
+ *     `reconcileServerRecency` can then tell a per-viewer server lowering
+ *     (#897) apart from a reply that landed mid-request (#883), and a block
+ *     that landed mid-request invalidates the whole response (#906);
+ *  2. request, then VALIDATE the shape before anything is applied;
+ *  3. group key, `serverSentById` off the RAW payload, ONE `conversationGate`
+ *     for the page (#927), map;
+ *  4. reconcile, persist, store write with `authoritativeRecency: true`.
+ *
+ * Every invariant is per PAGE, never per walk: each load-more takes its own
+ * fresh snapshot, so a reply or a block that lands between two pages is
+ * handled exactly as one that lands during a refresh.
+ *
+ * @param apply `'replace'` is an open (`setThreads`); `'merge'` is a refresh
+ *   or a walk step (`mergeThreads`, additive).
  */
-export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
+async function fetchAndApplyThreadPage(
+  groupId: string,
+  params: GetGroupThreadsRequest,
+  apply: 'replace' | 'merge',
+  options?: {
+    retryOn429?: boolean;
+    discardOnBlockedChange?: boolean;
+    /**
+     * Asked immediately before anything is written (#923). `true` means the
+     * walk this page was claimed from has been superseded — reopened, or left
+     * and opened again — so the page is discarded exactly as a page that
+     * straddled a block is: no SQLite write, no store write, nothing applied.
+     */
+    isSuperseded?: () => boolean;
+  },
+): Promise<ThreadPageResult> {
   // Captured BEFORE the request so `reconcileServerRecency` can tell a
   // per-viewer server lowering (#897) apart from a reply that landed while the
   // request was in flight. Sound as a snapshot because every thread writer
@@ -1155,7 +1244,26 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
   // request is in flight makes the response's per-viewer values stale.
   const blockedGenerationBefore = getStoreActions().blockedUsersGeneration;
 
-  const response = await getGroupThreads(groupId, { sort: 'activity_desc' });
+  // Two call shapes on purpose: a head refresh calls `getGroupThreads` with
+  // exactly the two arguments it always did, so its request is bit-identical
+  // to the pre-#923 one.
+  const response =
+    options?.retryOn429 === false
+      ? await getGroupThreads(groupId, params, { retryOn429: false })
+      : await getGroupThreads(groupId, params);
+
+  // A malformed 200 must NOT read as "this orbit is empty" or "the list ends
+  // here": the first would blank a list on a replace, the second would end a
+  // walk short of the imports it exists to reach. Throwing puts it on the
+  // caller's failure path, where no page is applied. Same guard, same reason
+  // as `loadReplies` (#821).
+  if (!Array.isArray(response.threads) || typeof response.hasMore !== 'boolean') {
+    throw new Error('[threadService] malformed thread list response');
+  }
+  const totalCount =
+    typeof response.totalCount === 'number' && Number.isFinite(response.totalCount)
+      ? response.totalCount
+      : response.threads.length;
 
   const groupKey = await getOrFetchGroupKey(groupId);
 
@@ -1165,6 +1273,9 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
   const serverSentById = new Map(
     response.threads.map((item) => [item.threadId, item.lastReplyAt !== undefined]),
   );
+  // RAW ids, read once: a row that fails to decrypt is still a row the server
+  // served, and the walk's keep-set must not mistake it for a removal.
+  const rawIds = [...serverSentById.keys()];
 
   // Resolved ONCE for the page: every row carries the same groupId, and the
   // gate is a property of the conversation, not of the row (#927).
@@ -1181,7 +1292,7 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
   const authFailedCount = mappedRows.filter((row) => row.envelope === 'auth-failed').length;
   if (__DEV__ && authFailedCount > 0) {
     console.warn(
-      `[loadThreadsForGroup] import metadata failed to authenticate on ${authFailedCount} row(s)`,
+      `[fetchAndApplyThreadPage] import metadata failed to authenticate on ${authFailedCount} row(s)`,
     );
   }
 
@@ -1194,6 +1305,39 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
   const storeAfter = getStoreActions();
   const threadsAfter = storeAfter.threads;
   const blockedSetChanged = storeAfter.blockedUsersGeneration !== blockedGenerationBefore;
+
+  // A WALK page straddling a block is thrown away whole rather than merged:
+  // the server filtered it for the pre-block viewer, so it may carry rows that
+  // are now blocked, and appending them would need a second pass to remove.
+  // The head refresh does NOT take this branch — it still applies, with the
+  // recency guard below, exactly as it did before #923.
+  //
+  // The SECOND discard, same shape and the same place in the order: the list
+  // was reopened or left while this page was in flight (#923). It is checked
+  // HERE, with the last awaits (the group key, the row mapping) behind it and
+  // only synchronous work between this point and the store write, so a walk
+  // that moved cannot have its rows re-added by a page it no longer owns.
+  if (
+    (options?.discardOnBlockedChange === true && blockedSetChanged) ||
+    options?.isSuperseded?.() === true
+  ) {
+    return {
+      threads: [],
+      rawIds,
+      hasMore: response.hasMore,
+      nextCursor: response.nextCursor,
+      totalCount,
+      newIdCount: 0,
+      discarded: true,
+    };
+  }
+
+  // ONE batched read for every row the store does not already hold, instead of
+  // a statement per row inside the loop (#923).
+  const fallbackById = safeDbGetThreadsByIds(
+    mapped.filter((t) => threadsAfter[t.id] === undefined).map((t) => t.id),
+  );
+
   const threads = mapped.map((t) => {
     const live = threadsAfter[t.id];
     return applyReconciledRecency(
@@ -1204,7 +1348,7 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
         serverReplyCount: t.replyCount,
         before: threadsBefore[t.id],
         live,
-        fallback: live ? null : safeDbGetThread(t.id),
+        fallback: live ? null : (fallbackById.get(t.id) ?? null),
         blockedSetChanged,
       }),
     );
@@ -1215,15 +1359,245 @@ export async function loadThreadsForGroup(groupId: string): Promise<Thread[]> {
     try {
       saveThreadBatch(groupId, threads);
     } catch (e) {
-      if (__DEV__) console.warn('[loadThreadsForGroup] DB write failed:', e instanceof Error ? e.message : e);
+      if (__DEV__) console.warn('[fetchAndApplyThreadPage] DB write failed:', e instanceof Error ? e.message : e);
     }
   }
 
   const store = getStoreActions();
   // The recency decision was made above, against the pre-request snapshot, so
   // the slice must not re-apply its never-lower merge on top of it (#897).
-  store.setThreads(groupId, threads, { authoritativeRecency: true });
-  return threads;
+  const newIdCount =
+    apply === 'merge'
+      ? store.mergeThreads(groupId, threads, { authoritativeRecency: true })
+      : (store.setThreads(groupId, threads, { authoritativeRecency: true }), threads.length);
+
+  return {
+    threads,
+    rawIds,
+    hasMore: response.hasMore,
+    nextCursor: response.nextCursor,
+    totalCount,
+    newIdCount,
+    discarded: false,
+  };
+}
+
+/**
+ * Fetch the HEAD page of a group's thread list, decrypt, and populate the
+ * store.
+ *
+ * Requests `activity_desc` (#883): both screens order by latest activity, so
+ * the server's 50-row page has to be the 50 most ACTIVE threads. With the old
+ * `created_desc` default, a reply on message #51 of a DM bumped the Chats row
+ * but the thread itself dropped out of the page on the next load — it showed
+ * at the top from SQLite hydration and then vanished when this list landed.
+ * An older backend ignores the value and returns `created_desc`. The request
+ * is exactly `{ sort: 'activity_desc' }`, as it was before #923.
+ *
+ * `options.tail` says what happens to rows a cursor walk has paged in (#923):
+ *
+ * - `'keep'` (the default when a walk has a tail) MERGES the head page, so a
+ *   pull-to-refresh, a key heal, a block or another member's import does not
+ *   throw away the member's scroll position.
+ * - `'drop'` is a REOPEN: the tail and the cursor go together and the list
+ *   returns to its head, exactly like a first open. Used when rows may have
+ *   appeared anywhere in the list rather than only at the head — an unblock,
+ *   and this device's own import settling.
+ *
+ * With no walked tail there is nothing to keep, so both spellings replace, and
+ * the existing single-argument callers behave precisely as they did.
+ */
+export async function loadThreadsForGroup(
+  groupId: string,
+  options?: { tail?: 'keep' | 'drop' },
+): Promise<Thread[]> {
+  const keepTail = options?.tail !== 'drop' && hasWalkedTail(groupId);
+
+  if (!keepTail) {
+    // Reopen BEFORE the request: the walked tail is dropped from the walk and
+    // from the store together, so the list is already at its head while the
+    // head page is in flight — and stays there if the request fails.
+    const keepIds = reopenWalk(groupId);
+    if (keepIds !== null) getStoreActions().trimThreadsToHead(groupId, keepIds);
+  }
+
+  const page = await fetchAndApplyThreadPage(
+    groupId,
+    { sort: 'activity_desc' },
+    keepTail ? 'merge' : 'replace',
+  );
+
+  if (keepTail) {
+    refreshWalk(groupId, { ids: page.rawIds, totalCount: page.totalCount });
+  } else {
+    openWalk(groupId, {
+      ids: page.rawIds,
+      hasMore: page.hasMore,
+      // The head cursor is a CAPABILITY probe, never a position: it is bound
+      // to `activity_desc` and the walk runs on `created_desc`. A server that
+      // reports more rows without one cannot be walked.
+      hasCursor: typeof page.nextCursor === 'string' && page.nextCursor.length > 0,
+      totalCount: page.totalCount,
+    });
+  }
+
+  return page.threads;
+}
+
+/**
+ * Walk one page further back in a conversation's list (#923).
+ *
+ * `created_desc`, 100 rows, `before` once the walk has a cursor. The first
+ * page of a walk is deliberately cursorless — see `threadListWalk`.
+ *
+ * Single-flight per conversation: `onEndReached` fires repeatedly while the
+ * list is near its end, and two pages in flight against one cursor would
+ * request the same rows twice.
+ *
+ * Results, in the caller's terms:
+ * - `loaded` — a page was applied. `newIdCount` can still be 0 (the walk's
+ *   first page overlaps the head by construction); `hasMore` says whether to
+ *   offer another.
+ * - `exhausted` / `unsupported` — nothing was requested, and nothing will be.
+ * - `reopened` — the server rejected the cursor; the list is back at its head.
+ * - `rate-limited` — a 429. Nothing was applied, the cursor is intact, and
+ *   NOTHING is chained: the member taps to retry.
+ * - `skipped` — no walk for this conversation (the list was never opened), a
+ *   page is already in flight, the page went stale (#906), or the walk it was
+ *   claimed from was superseded by a reopen or a leave while it was in flight.
+ *
+ * Any other failure rejects, with `loadMoreFailed` already set for the footer.
+ */
+export function loadMoreThreadsForGroup(groupId: string): Promise<LoadMoreResult> {
+  const existing = getWalkInflight(groupId);
+  if (existing !== null) return existing;
+
+  const claim = beginWalkPage(groupId);
+  if (!claim.ok) {
+    return Promise.resolve({
+      status: claim.status,
+      newIdCount: 0,
+      hasMore: walkHasMore(groupId),
+    });
+  }
+
+  const run = runWalkPage(groupId, claim.cursor, claim.epoch).finally(() => {
+    // Only if it is still OURS: a leave and a re-open between the request and
+    // this cleanup would otherwise clear the new walk's single-flight slot.
+    clearWalkInflight(groupId, run);
+  });
+  setWalkInflight(groupId, run);
+  return run;
+}
+
+async function runWalkPage(
+  groupId: string,
+  cursor: string | null,
+  epoch: number,
+): Promise<LoadMoreResult> {
+  const params: GetGroupThreadsRequest =
+    cursor === null
+      ? { sort: 'created_desc', limit: WALK_PAGE_LIMIT }
+      : { sort: 'created_desc', limit: WALK_PAGE_LIMIT, before: cursor };
+
+  /**
+   * This page belongs to a walk that no longer exists (#923 review).
+   *
+   * `'skipped'` is the honest answer and the one the hook already handles: it
+   * stops the follow-up loop and leaves a tappable "Load more" rather than
+   * spinning. What it must NOT do is touch the walk that replaced ours —
+   * `failWalkPage` would light the new walk's retry row, and `discardWalkPage`
+   * would take its own in-flight page out of `loading`.
+   */
+  const superseded = (): LoadMoreResult => ({
+    status: 'skipped',
+    newIdCount: 0,
+    hasMore: walkHasMore(groupId),
+  });
+
+  let page: ThreadPageResult;
+  try {
+    page = await fetchAndApplyThreadPage(groupId, params, 'merge', {
+      retryOn429: false,
+      discardOnBlockedChange: true,
+      isSuperseded: () => !isWalkCurrent(groupId, epoch),
+    });
+  } catch (e) {
+    // Checked before every walk mutation on the failure path too: a reopen or
+    // a leave outranks whatever this page's error has to say.
+    if (!isWalkCurrent(groupId, epoch)) return superseded();
+    if (e instanceof ValidationError && e.reason === 'INVALID_CURSOR') {
+      if (noteInvalidCursor(groupId) === 'stop') {
+        return { status: 'unsupported', newIdCount: 0, hasMore: false };
+      }
+      const keepIds = reopenWalk(groupId);
+      if (keepIds !== null) getStoreActions().trimThreadsToHead(groupId, keepIds);
+      return { status: 'reopened', newIdCount: 0, hasMore: walkHasMore(groupId) };
+    }
+    if (e instanceof ApiError && e.statusCode === 429) {
+      failWalkPage(groupId, 'rate-limited');
+      return { status: 'rate-limited', newIdCount: 0, hasMore: true };
+    }
+    failWalkPage(groupId, 'error');
+    throw e;
+  }
+
+  if (!isWalkCurrent(groupId, epoch)) return superseded();
+
+  if (page.discarded) {
+    discardWalkPage(groupId);
+    return { status: 'skipped', newIdCount: 0, hasMore: walkHasMore(groupId) };
+  }
+
+  applyWalkPage(groupId, epoch, {
+    ids: page.rawIds,
+    hasMore: page.hasMore,
+    nextCursor: page.nextCursor,
+    totalCount: page.totalCount,
+  });
+
+  return {
+    status: 'loaded',
+    newIdCount: page.newIdCount,
+    hasMore: walkHasMore(groupId),
+  };
+}
+
+/**
+ * A list screen stopped showing this conversation (#923).
+ *
+ * Drops its walk and trims the walked tail out of the store, so at most one
+ * orbit's and one DM's tail is ever resident. SQLite is untouched: the rows
+ * come back from the local hydrate and from the next walk.
+ */
+export function leaveThreadList(groupId: string): void {
+  const keepIds = leaveWalk(groupId);
+  if (keepIds === null) return;
+  getStoreActions().trimThreadsToHead(groupId, keepIds);
+}
+
+/**
+ * Make sure the store holds an ENTITY for each of these thread ids, reading
+ * the missing ones from SQLite (#923).
+ *
+ * For search: FTS reaches every cached row, but a trimmed tail row no longer
+ * has an entity in the store, so its result would render blank. Entities only
+ * — `cacheThreadEntities` never re-lists a thread, which would resurrect a
+ * trimmed row in the list behind the search overlay.
+ *
+ * @returns how many entities were loaded.
+ */
+export function ensureThreadEntitiesCached(threadIds: readonly string[]): number {
+  if (threadIds.length === 0) return 0;
+  const { threads: known } = getStoreActions();
+  const missing = [...new Set(threadIds)].filter((id) => known[id] === undefined);
+  if (missing.length === 0) return 0;
+
+  const rows = [...safeDbGetThreadsByIds(missing).values()];
+  if (rows.length === 0) return 0;
+
+  getStoreActions().cacheThreadEntities(rows);
+  return rows.length;
 }
 
 /**
@@ -1740,11 +2114,18 @@ export async function createNewThread(
 /**
  * Hydrate the store with threads from the local database.
  * Called synchronously before async API fetch for instant UI.
+ *
+ * BOUNDED since #923: a walked orbit can hold thousands of cached rows, and
+ * this read runs on every open, synchronously, for a list the server is about
+ * to replace. See `getRecentThreadsForConversation` for why a LIMIT is sound
+ * on this particular read and nowhere else — and why it is taken in the
+ * screen's own ACTIVITY order, so the bound cuts the rows that would render
+ * last rather than the ones that would render first.
  */
 export function hydrateThreadsFromLocal(conversationId: string): void {
   if (!isDatabaseInitialized()) return;
   try {
-    const threads = getThreadsForConversation(conversationId);
+    const threads = getRecentThreadsForConversation(conversationId, HYDRATE_THREAD_LIMIT);
     if (threads.length > 0) {
       const store = useAppStore.getState();
       store.setThreads(conversationId, threads);

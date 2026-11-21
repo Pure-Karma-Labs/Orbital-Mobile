@@ -1,9 +1,13 @@
+import { DatabaseSync } from 'node:sqlite';
 import { closeDatabase } from '../../connection';
+import { SECONDS_CEILING } from '../../timestampUnits';
 import { makeDb } from '../../testUtils/dbMockHelpers';
 import {
   saveThread,
   saveThreadBatch,
   getThreadsForConversation,
+  getRecentThreadsForConversation,
+  getThreadsByIds,
   getThread,
   getConversationIdsWithThreads,
   deleteThread,
@@ -511,6 +515,208 @@ describe('threadRepository', () => {
         (c) => typeof c[0] === 'string' && (c[0] as string).includes('DELETE FROM orbital_threads'),
       ) as unknown as [string, unknown[]];
       expect(deleteCall).toBeDefined();
+    });
+  });
+
+  describe('getRecentThreadsForConversation (#923)', () => {
+    it('binds the conversation and the LIMIT, and orders by ACTIVITY', () => {
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          return { rows: [row({ id: 'thread-1' })], rowsAffected: 0 };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const threads = getRecentThreadsForConversation('conv-1', 200);
+
+      const select = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+      // Both lists sort by the newer of the two columns, so the bounded read
+      // has to cut on that value and not on created_at alone.
+      expect(select[0]).toContain('last_reply_at');
+      expect(select[0]).toContain('LIMIT ?');
+      // No range predicate on the mixed-unit columns (#844) — the LIMIT alone.
+      // (The ORDER BY compares them against the seconds CEILING, which is a
+      // unit normalisation, not a filter: it decides order, never existence.)
+      expect(select[0]).not.toContain('WHERE created_at');
+      expect(select[0]).not.toContain('created_at >');
+      // The ceiling is BOUND, never interpolated into the statement.
+      expect(select[0]).not.toContain('100000000000');
+      expect(select[1]).toEqual(['conv-1', SECONDS_CEILING, SECONDS_CEILING, SECONDS_CEILING, 200]);
+      expect(threads).toHaveLength(1);
+      expect(threads[0].id).toBe('thread-1');
+    });
+
+    it('floors a fractional limit', () => {
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      getRecentThreadsForConversation('conv-1', 200.9);
+
+      const select = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+      expect(select[1][select[1].length - 1]).toBe(200);
+    });
+
+    it('EXECUTED: the activity order keeps a thread replied to today, in either unit', () => {
+      // op-sqlite is mocked everywhere in this file, so the assertions above
+      // prove only that a string was passed. The ORDER BY is the whole point
+      // of this read, so the statement the repository actually emits is
+      // captured and RUN, on the same SQLite series op-sqlite ships (see
+      // migrations.ddl.test.ts for the Node version rationale).
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+      getRecentThreadsForConversation('conv-1', 3);
+      const [sql, params] = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+
+      const db = new DatabaseSync(':memory:');
+      db.exec(`CREATE TABLE orbital_threads (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        author_id TEXT,
+        author_username TEXT,
+        title TEXT,
+        body TEXT,
+        content_type TEXT,
+        pinned INTEGER,
+        reply_count INTEGER,
+        last_reply_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        sync_status TEXT,
+        is_import INTEGER,
+        import_source TEXT,
+        media_count INTEGER
+      )`);
+      const insert = db.prepare(
+        `INSERT INTO orbital_threads (id, conversation_id, created_at, updated_at, last_reply_at)
+         VALUES (?, 'conv-1', ?, ?, ?)`,
+      );
+      const DAY = 86_400_000;
+      const NOW = 1_764_000_000_000;
+      // Newest creation, never replied to.
+      insert.run('fresh', NOW, NOW, null);
+      // Created two years ago, replied to an hour ago: it renders FIRST but
+      // sorts last by created_at — the row this fix exists for.
+      insert.run('old-replied', NOW - 730 * DAY, NOW, NOW - 3_600_000);
+      // A pre-#844 row in epoch SECONDS, created a week ago. Compared raw it
+      // is ~1000x smaller than everything else and would be cut first.
+      insert.run('legacy-seconds', (NOW - 7 * DAY) / 1000, NOW, null);
+      // Created a year ago, no replies: the row the LIMIT of 3 should drop.
+      insert.run('stale', NOW - 365 * DAY, NOW, null);
+
+      const rows = db.prepare(sql).all(...(params as (string | number)[])) as { id: string }[];
+      db.close();
+
+      expect(rows.map((r) => r.id)).toEqual(['fresh', 'old-replied', 'legacy-seconds']);
+    });
+
+    it('queries nothing for a non-positive limit, rather than emitting LIMIT -1', () => {
+      // SQLite reads a negative LIMIT as "no limit": a silent fall back to the
+      // unbounded read is exactly what this function exists to avoid.
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      expect(getRecentThreadsForConversation('conv-1', 0)).toEqual([]);
+      expect(getRecentThreadsForConversation('conv-1', -5)).toEqual([]);
+      expect(getRecentThreadsForConversation('conv-1', Number.NaN)).toEqual([]);
+      expect(
+        exec.mock.calls.filter(
+          (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+        ),
+      ).toHaveLength(0);
+    });
+
+    it('maps a legacy epoch-SECONDS row through toMillis like the unbounded read', () => {
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          return {
+            rows: [row({ created_at: 1700000000, updated_at: 1700000000, last_reply_at: 1700000000 })],
+            rowsAffected: 0,
+          };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const threads = getRecentThreadsForConversation('conv-1', 200);
+
+      expect(threads[0].createdAt).toBe(1700000000000);
+      expect(threads[0].lastReplyAt).toBe(1700000000000);
+    });
+  });
+
+  describe('getThreadsByIds (#923)', () => {
+    it('binds one placeholder per id', () => {
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          return { rows: [row({ id: 'thread-1' }), row({ id: 'thread-2' })], rowsAffected: 0 };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const threads = getThreadsByIds(['thread-1', 'thread-2']);
+
+      const select = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+      expect(select[0]).toContain('WHERE id IN (?, ?)');
+      expect(select[1]).toEqual(['thread-1', 'thread-2']);
+      expect(threads.map((t) => t.id)).toEqual(['thread-1', 'thread-2']);
+    });
+
+    it('de-duplicates ids', () => {
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      getThreadsByIds(['thread-1', 'thread-1', 'thread-2']);
+
+      const select = exec.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]];
+      expect(select[1]).toEqual(['thread-1', 'thread-2']);
+    });
+
+    it('queries nothing for an empty id list', () => {
+      const exec = jest.fn((_sql: string, _params?: unknown[]) => ({ rows: [], rowsAffected: 0 }));
+      makeDb(exec);
+
+      expect(getThreadsByIds([])).toEqual([]);
+      expect(
+        exec.mock.calls.filter(
+          (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+        ),
+      ).toHaveLength(0);
+    });
+
+    it('chunks a long id list into several statements and unions the rows', () => {
+      const ids = Array.from({ length: 450 }, (_, i) => `thread-${i}`);
+      let call = 0;
+      const exec = jest.fn((sql: string) => {
+        if (typeof sql === 'string' && sql.includes('SELECT')) {
+          const id = `chunk-${call++}`;
+          return { rows: [row({ id })], rowsAffected: 0 };
+        }
+        return { rows: [], rowsAffected: 0 };
+      });
+      makeDb(exec);
+
+      const threads = getThreadsByIds(ids);
+
+      const selects = exec.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && (c[0] as string).includes('SELECT'),
+      ) as unknown as [string, unknown[]][];
+      expect(selects).toHaveLength(3);
+      expect(selects[0][1]).toHaveLength(200);
+      expect(selects[1][1]).toHaveLength(200);
+      expect(selects[2][1]).toHaveLength(50);
+      expect(threads.map((t) => t.id)).toEqual(['chunk-0', 'chunk-1', 'chunk-2']);
     });
   });
 });

@@ -79,6 +79,12 @@ function makeStore() {
     updateThreadSyncStatus: jest.fn(),
     updateReplySyncStatus: jest.fn(),
     markThreadViewed: jest.fn(),
+    threadListPaging: {},
+    mergeThreads: jest.fn(() => 0),
+    trimThreadsToHead: jest.fn(),
+    cacheThreadEntities: jest.fn(),
+    setThreadListPaging: jest.fn(),
+    clearThreadListPaging: jest.fn(),
 
     colorScheme: 'system' as const,
     activeTab: 'threads' as const,

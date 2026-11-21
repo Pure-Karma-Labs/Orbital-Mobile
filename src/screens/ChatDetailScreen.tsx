@@ -31,7 +31,7 @@ import {
 } from '../stores';
 import type { Thread } from '../types/store';
 import { getThreadState } from '../utils/threadState';
-import { compareThreadsByActivityDesc, threadActivityAt } from '../utils/threadActivity';
+import { createThreadListRowsCache, type ListRow } from '../utils/threadListRows';
 import { VerifiedStatus } from '../types/database';
 import type { ChatsStackParamList } from '../navigation/types';
 import { Button } from '../components/Button';
@@ -41,7 +41,11 @@ import { SearchEmptyState } from '../components/SearchEmptyState';
 import { IdentityChangeBanner } from '../components/IdentityChangeBanner';
 import { SearchBar } from './threads/SearchBar';
 import { ChatMessageItem } from './chats/ChatMessageItem';
-import { loadThreadsForGroup, hydrateThreadsFromLocal } from '../services/threadService';
+import {
+  loadThreadsForGroup,
+  hydrateThreadsFromLocal,
+  ensureThreadEntitiesCached,
+} from '../services/threadService';
 import { markConversationReadEverywhere } from '../services/conversationService';
 import {
   GroupKeyFailureNotice,
@@ -51,6 +55,11 @@ import { useGroupKeyLoadState } from '../hooks/useGroupKeyLoadState';
 import { PullToRefreshOverlay } from '../components/PullToRefreshOverlay';
 import { usePullToRefresh } from '../hooks/usePullToRefresh';
 import { useSQLiteSearch } from '../hooks/useSQLiteSearch';
+import {
+  useThreadListPaging,
+  THREAD_LIST_MVCP,
+  THREAD_LIST_REMOVE_CLIPPED_SUBVIEWS,
+} from '../hooks/useThreadListPaging';
 import { useWebSocketSubscription } from '../hooks/useWebSocketSubscription';
 import { useBlockedSet } from '../hooks/useBlockedSet';
 import { useBlockedDmPeer, useBlockedPeerTransition } from '../hooks/useBlockedDmPeer';
@@ -58,55 +67,12 @@ import { BlockedPeerNotice } from '../components/BlockedPeerNotice';
 import { useIsMuted } from '../hooks/useIsMuted';
 import { useMuteActions } from '../hooks/useMuteActions';
 import { Emoji } from '../components/Emoji';
-import { formatDayLabel, formatShortTime, localDayKey } from '../utils/formatPostTimestamp';
+import { formatShortTime } from '../utils/formatPostTimestamp';
 
 export type ChatDetailScreenProps = NativeStackScreenProps<
   ChatsStackParamList,
   'ChatDetail'
 >;
-
-type DaySeparatorRow = { type: 'day'; label: string; key: string };
-type SectionSeparatorRow = { type: 'section'; key: string };
-type ThreadRow = { type: 'thread'; thread: Thread; key: string };
-type ListRow = DaySeparatorRow | SectionSeparatorRow | ThreadRow;
-
-function buildListRows(threads: Thread[]): ListRow[] {
-  if (threads.length === 0) return [];
-
-  // Most recent activity first: a reply on an old message brings it back to the
-  // top of the DM, matching what the Chats list now does with the conversation
-  // itself (#883). The comparator is total and never returns NaN.
-  const sorted = [...threads].sort(compareThreadsByActivityDesc);
-  const rows: ListRow[] = [];
-  let lastDayKey: string | null = null;
-  let groupIndex = 0;
-
-  for (const thread of sorted) {
-    // Group and label by activity, so the day headers agree with the order the
-    // rows are in. The row's own clock time still shows its creation time.
-    const activityTime = threadActivityAt(thread);
-    const dayKey = localDayKey(activityTime);
-    // An unrenderable timestamp has no day, so it opens no group and closes
-    // none: it joins whatever group it lands in. Letting '' through would both
-    // render a bare `───  ───` and split a real day in two, re-emitting its
-    // `day-<key>` (a duplicate FlatList key) and an extra section row.
-    if (dayKey !== '' && dayKey !== lastDayKey) {
-      if (lastDayKey !== null) {
-        rows.push({ type: 'section', key: `section-${groupIndex}` });
-        groupIndex++;
-      }
-      rows.push({
-        type: 'day',
-        label: formatDayLabel(activityTime),
-        key: `day-${dayKey}`,
-      });
-      lastDayKey = dayKey;
-    }
-    rows.push({ type: 'thread', thread, key: `thread-${thread.id}` });
-  }
-
-  return rows;
-}
 
 function EmptyState({ onCompose }: { onCompose: () => void }): React.JSX.Element {
   const theme = useTheme();
@@ -227,6 +193,13 @@ export function ChatDetailScreen({
   const { searchText, setSearchText, resultThreadIds, isSearching, clearSearch } =
     useSQLiteSearch(conversationId);
 
+  /**
+   * One rows cache per mounted screen (#923) — see `createThreadListRowsCache`
+   * and the ThreadsScreen comment: re-sorting a walked list on every `threads`
+   * map write misses the frame budget on Hermes.
+   */
+  const rowsCache = useRef(createThreadListRowsCache()).current;
+
   const listRows = useMemo((): ListRow[] => {
     if (isSearching) {
       return resultThreadIds
@@ -239,13 +212,66 @@ export function ChatDetailScreen({
           key: `thread-${thread.id}`,
         }));
     }
-    return buildListRows(threadList);
-  }, [isSearching, resultThreadIds, threads, threadList, blockedSet]);
+    return rowsCache(threadList);
+  }, [isSearching, resultThreadIds, threads, threadList, blockedSet, rowsCache]);
 
-  // Scroll to top when entering/exiting search mode
+  /**
+   * Scroll to the top when ENTERING search, and only then (#923). Exiting used
+   * to scroll too, which threw away the position of a list the member had
+   * walked back through.
+   */
   useEffect(() => {
+    if (!isSearching) return;
     flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
   }, [isSearching]);
+
+  /**
+   * Search reaches every CACHED row, including rows whose entity a leave-trim
+   * dropped from the store (#923). Entities only — never the list — so a
+   * trimmed row does not reappear behind the search overlay.
+   */
+  useEffect(() => {
+    if (!isSearching || resultThreadIds.length === 0) return;
+    ensureThreadEntitiesCached(resultThreadIds);
+  }, [isSearching, resultThreadIds]);
+
+  /**
+   * A reopen dropped this DM's walked tail (#923 review) — an unblock, an own
+   * import settling, or an `INVALID_CURSOR`. The member is left clamped at the
+   * end of a head page whose tail is gone; back to the top, unanimated,
+   * because the rows that were under the viewport no longer exist.
+   *
+   * The hook also re-arms the first-scroll gate on the same signal, so this
+   * list does not walk straight back down the pages it just dropped: a DM
+   * walks when asked (#886), and being put back at the top is not asking.
+   *
+   * Null-safe: the blocked / key / empty / search branches do not mount the
+   * list, and a list mounting later starts at the top.
+   */
+  const handleTailDropped = useCallback((): void => {
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, []);
+
+  /**
+   * Load-more (#923), GATED on a real scroll gesture — the difference from
+   * ThreadsScreen.
+   *
+   * `onEndReached` also fires on a content-size change, so an orbit's short
+   * list auto-walks on open, which is what an orbit wants. A DM must not:
+   * a conversation of five messages would fire off walk requests nobody asked
+   * for every time it is opened (#886). `onScrollBeginDrag` below opens the
+   * gate; until then the footer offers a tap instead.
+   */
+  const paging = useThreadListPaging({
+    conversationId,
+    // THREAD rows only: day and section separators cannot be what a page
+    // added, and counting them would read as growth that never happened.
+    renderedCount: threadList.length,
+    filtersActive: blockedSet.size > 0,
+    disabled: isSearching,
+    requireFirstScroll: true,
+    onTailDropped: handleTailDropped,
+  });
 
   /**
    * Group-key state for this DM (#912). `keyPending` is the transient "a peer
@@ -302,10 +328,20 @@ export function ChatDetailScreen({
     hydrateThreadsFromLocal(conversationId);
   }, [conversationId]);
 
+  /**
+   * The DM this effect last issued a load for (#923). A conversation CHANGE is
+   * an open — the walked tail belongs to the DM being left, so it goes with
+   * its cursor — while a key-heal rerun is this same DM re-reading its head
+   * page, where dropping the tail would yank the member back to the top.
+   */
+  const loadedConversationRef = useRef<string | null>(null);
+
   useEffect(() => {
     const target = conversationId;
+    const isReopen = loadedConversationRef.current !== target;
+    loadedConversationRef.current = target;
     const isStale = (): boolean => conversationIdRef.current !== target;
-    loadThreadsForGroup(target)
+    loadThreadsForGroup(target, { tail: isReopen ? 'drop' : 'keep' })
       .then(() => {
         if (isStale()) return;
         // On success only: clearing before the load would flash the
@@ -347,7 +383,9 @@ export function ChatDetailScreen({
     const isStale = (): boolean => !mountedRef.current || conversationIdRef.current !== target;
     setRefreshing(true);
     try {
-      await loadThreadsForGroup(target);
+      // KEEP, explicitly (#923): a pull shows what is new at the head; it does
+      // not start the walk over.
+      await loadThreadsForGroup(target, { tail: 'keep' });
       if (!isStale()) clearKeyState();
     } catch (e) {
       if (__DEV__) console.warn('[ChatDetail] refresh failed:', e instanceof Error ? e.message : e);
@@ -436,6 +474,14 @@ export function ChatDetailScreen({
     marginTop: theme.spacing.xs,
   };
 
+  /** The empty-but-`hasMore` body (#923): the footer, centred, nothing else. */
+  const pagingEmptyStyle: ViewStyle = {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing.xl,
+  };
+
   const blockedEmptyStyle: ViewStyle = {
     flex: 1,
     justifyContent: 'center',
@@ -520,6 +566,17 @@ export function ChatDetailScreen({
           <View style={{ flex: 1 }} testID="group-key-pending-body" />
         ) : keyFailureMessage !== null ? (
           <GroupKeyFailureNotice message={keyFailureMessage} />
+        ) : !isSearching && paging.hasMore ? (
+          // #923: nothing renders, but the server says there is more — a head
+          // page of nothing but a blocked author, typically. "Start the
+          // conversation!" would be a lie about a DM full of history. Ordered
+          // after the blocked and key notices, which are about this DM being
+          // unreadable rather than about what is in it. The list is not
+          // mounted here, so the hook's footer is the whole body: a spinner
+          // while it walks, then a "Load more" row to tap.
+          <View style={pagingEmptyStyle} testID="chat-paging-empty">
+            {paging.footer}
+          </View>
         ) : (
           <EmptyState onCompose={handleCompose} />
         )
@@ -542,8 +599,23 @@ export function ChatDetailScreen({
             }
             {...scrollProps}
             keyboardShouldPersistTaps="handled"
-            initialNumToRender={20}
-            maxToRenderPerBatch={10}
+            ListFooterComponent={paging.footer}
+            // AFTER the spread, deliberately: `usePullToRefresh` supplies only
+            // onScroll today, but this gate must survive it ever growing an
+            // onScrollBeginDrag of its own.
+            onScrollBeginDrag={paging.onScrollBeginDrag}
+            onEndReached={paging.onEndReached}
+            onEndReachedThreshold={0.3}
+            // Anchor on row 0 so a head refresh landing mid-walk does not
+            // shift what the member is reading. Safe here because this list
+            // has no ListHeaderComponent (#923 / #821).
+            maintainVisibleContentPosition={THREAD_LIST_MVCP}
+            removeClippedSubviews={THREAD_LIST_REMOVE_CLIPPED_SUBVIEWS}
+            // In line with ThreadsScreen (#923): lower batches mean fewer
+            // concurrent avatar resolutions per scroll, and a DM list is now
+            // as long as an orbit's.
+            initialNumToRender={10}
+            maxToRenderPerBatch={5}
             windowSize={5}
           />
         </View>

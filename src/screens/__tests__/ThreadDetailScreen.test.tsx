@@ -4173,14 +4173,23 @@ describe('ThreadDetailScreen — NotFound (#923)', () => {
     expect(texts).not.toContain('Could not load thread');
   });
 
-  it('does not navigate back when the stack has nowhere to go', async () => {
+  it('shows the error copy instead when the stack has nowhere to go', async () => {
+    // A cold-start deep link or a notification open: this screen IS the
+    // stack. The removal still stands, but a dismissal that cannot pop has
+    // to fall through to the error path — reporting it handled left a blank
+    // body with no copy and no way out (#923 review).
     mockLoadThread.mockRejectedValueOnce(new NotFoundError());
     mockNavigation.canGoBack.mockReturnValueOnce(false);
 
-    await renderScreen();
+    const renderer = await renderScreen();
 
     expect(mockRemoveThread).toHaveBeenCalledWith('thread-1');
     expect(mockNavigation.goBack).not.toHaveBeenCalled();
+    const texts = renderer.root
+      .findAllByType('Text' as unknown as React.ComponentType)
+      .map((node) => node.props.children)
+      .filter((c): c is string => typeof c === 'string');
+    expect(texts).toContain('Could not load thread');
   });
 
   it('leaves every other failure on its existing path', async () => {

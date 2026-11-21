@@ -696,17 +696,26 @@ export function ThreadDetailScreen({
    * opens one is where the stale row gets reconciled. The row leaves the list
    * and the screen pops — a 404 has nothing to show and nothing to retry.
    *
-   * Returns true when it handled the error, so each caller's key routing is
-   * skipped rather than reordered: a 404 is not a key verdict.
+   * Returns true only when the screen actually POPPED, so each caller's key
+   * routing is skipped rather than reordered: a 404 is not a key verdict.
+   *
+   * With nothing to pop back to — a cold-start deep link or a notification
+   * open, where this screen IS the stack — claiming the error was handled
+   * suppressed the caller's `setError` and left a blank body with no copy and
+   * no way out (#923 review). The removal still stands in that case; only the
+   * verdict is handed back, so the existing "Could not load thread" path
+   * renders.
    */
   const dismissMissingThread = useCallback(
     (target: string, e: unknown): boolean => {
       if (!(e instanceof NotFoundError)) return false;
       // Store first, then the pop: the list behind this screen must not paint
-      // the row again on the way out.
+      // the row again on the way out. Unconditional — the row is stale
+      // whether or not there is a screen behind this one.
       removeThreadRef.current(target);
       const nav = navigationRef.current;
-      if (nav.canGoBack()) nav.goBack();
+      if (!nav.canGoBack()) return false;
+      nav.goBack();
       return true;
     },
     // EMPTY, load-bearing. This helper is in `fetchData`'s dependency chain,

@@ -1413,6 +1413,53 @@ function setStoreThreads(threads: Record<string, Thread>): void {
   useAppStore.getState.mockReturnValue({ ...current, threads });
 }
 
+/**
+ * Install a counting view of the store's `conversations` map.
+ *
+ * `conversationGate` is the ONLY reader of that slice on the thread-list page
+ * path, so a property getter counts gate resolutions exactly — which is the
+ * #927 invariant: the gate is a property of the conversation, not of the row,
+ * so it is resolved once per PAGE no matter how many rows the page carries.
+ */
+function countConversationGateReads(
+  conversations: Record<string, Conversation>,
+): () => number {
+  const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
+    useAppStore: { getState: jest.Mock };
+  };
+  const current = useAppStore.getState();
+  let reads = 0;
+  // `defineProperty` on a copy, NOT a getter inside an object literal: Babel
+  // compiles `{ ...spread, get x() {} }` by READING the getter once into a
+  // plain value, which silently turns this counter into a constant 1 — it
+  // passed a per-row mutation of the code under test before this was found.
+  const state: Record<string, unknown> = { ...current };
+  Object.defineProperty(state, 'conversations', {
+    get: () => {
+      reads += 1;
+      return conversations;
+    },
+  });
+  useAppStore.getState.mockReturnValue(state);
+  return () => reads;
+}
+
+/** An orbit row, the gate answer that makes import flags readable. */
+function orbitConversation(): Conversation {
+  return {
+    id: 'group-1',
+    type: 'group',
+    name: 'Family',
+    memberCount: 3,
+    active: true,
+    lastMessageAt: null,
+    unreadCount: 0,
+    lastReadAt: null,
+    createdAt: 900,
+    updatedAt: 1000,
+  };
+}
+
 /** Simulate a block/unblock landing: the generation token moves (#906 review). */
 function setStoreBlockedGeneration(generation: number): void {
   const { useAppStore } = jest.requireMock('../../stores/useAppStore') as {
@@ -1926,6 +1973,57 @@ describe.each(THREAD_PAGE_MODES)(
 
 // The single-thread detail path has no pages and no walk, so it stays
 // unparametrised: `loadThread` takes the same snapshot for ONE row.
+// ---------------------------------------------------------------------------
+// #927 — ONE conversation gate per page, on both paths
+//
+// The gate decides whether a server-flagged row may display as an import, and
+// it is a property of the CONVERSATION. Resolving it per row was the original
+// shape; a 100-row walk page would do that 100 times, and a future gate that
+// reads SQLite would do it 100 times there. The invariant held on the
+// load-more path only by shared code, so it is asserted on both.
+// ---------------------------------------------------------------------------
+
+describe.each(THREAD_PAGE_MODES)('#927 one conversation gate per page — $name', (mode) => {
+  beforeEach(() => mode.open());
+
+  it('resolves the gate ONCE, however many rows the page carries', async () => {
+    const gateReads = countConversationGateReads({ 'group-1': orbitConversation() });
+    mockGetGroupThreads.mockResolvedValue(
+      listPage({
+        threads: ['row-1', 'row-2', 'row-3', 'row-4'].map((id) =>
+          makeThreadListItem({ threadId: id, isImport: true }),
+        ),
+        totalCount: 4,
+        hasMore: true,
+        nextCursor: 'cursor-2',
+      }),
+    );
+
+    const threads = await mode.load('group-1');
+
+    expect(threads).toHaveLength(4);
+    expect(gateReads()).toBe(1);
+  });
+
+  it('still resolves it once when the page has a single row', async () => {
+    // The counter would read 1 per row as well on a one-row page, so the
+    // multi-row case above is the one that can fail — this pins the floor.
+    const gateReads = countConversationGateReads({ 'group-1': orbitConversation() });
+    mockGetGroupThreads.mockResolvedValue(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'row-1', isImport: true })],
+        totalCount: 1,
+        hasMore: true,
+        nextCursor: 'cursor-2',
+      }),
+    );
+
+    await mode.load('group-1');
+
+    expect(gateReads()).toBe(1);
+  });
+});
+
 describe('#906 blocked-set generation guard (loadThread)', () => {
   it('keeps the live row when the blocked set changed during loadThread', async () => {
     setStoreThreads({

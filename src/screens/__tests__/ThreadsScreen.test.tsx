@@ -2051,7 +2051,12 @@ describe('ThreadsScreen — load more (#923)', () => {
     const renderer = await render();
     const props = listProps(renderer);
 
-    expect(props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 });
+    // The threshold keeps a member at the top AT the top when rows land above
+    // the anchor (first activity of a new day); without it they are hidden.
+    expect(props.maintainVisibleContentPosition).toEqual({
+      minIndexForVisible: 0,
+      autoscrollToTopThreshold: 16,
+    });
     expect(props.onEndReachedThreshold).toBe(0.3);
     // Platform in jest is ios: the pair ships together there.
     expect(props.removeClippedSubviews).toBe(true);

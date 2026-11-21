@@ -62,8 +62,19 @@ export const MAX_FOLLOW_UP_PAGES = 5;
  * `ListHeaderComponent`. RN 0.82.1's VirtualizedList adds +1 to
  * `minIndexForVisible` whenever a header exists, which is why ThreadDetail
  * cannot have this (see the comment on its FlatList, #821).
+ *
+ * `autoscrollToTopThreshold` is what keeps a member who is AT the top there.
+ * Without it the native side shifts the offset by the anchor's movement
+ * unconditionally, so the first activity of a new day (a new day heading plus
+ * the row, inserted above the old first heading) would land off-screen above
+ * a member sitting at offset 0. With it, a list within 16pt of the top
+ * scrolls to the top after the adjustment; a member scrolled further down is
+ * still anchored.
  */
-export const THREAD_LIST_MVCP = Object.freeze({ minIndexForVisible: 0 });
+export const THREAD_LIST_MVCP = Object.freeze({
+  minIndexForVisible: 0,
+  autoscrollToTopThreshold: 16,
+});
 
 /**
  * `removeClippedSubviews`, decided per platform because of the prop above.

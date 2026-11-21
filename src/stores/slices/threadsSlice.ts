@@ -5,6 +5,7 @@ import type {
   Reply,
   SyncStatus,
   Thread,
+  ThreadListPagingState,
   ThreadsSlice,
 } from '../../types/store';
 
@@ -49,6 +50,30 @@ function resolveRecency(
     ? maxTimestamp(incoming.lastReplyAt, null)
     : maxTimestamp(existing?.lastReplyAt, incoming.lastReplyAt);
   return resolved === incoming.lastReplyAt ? incoming : { ...incoming, lastReplyAt: resolved };
+}
+
+/**
+ * Does a paging slot say exactly what the one already stored says?
+ *
+ * The walk commits on EVERY transition, and most of them change nothing a
+ * footer renders: a head refresh of an idle walk re-states the same four
+ * values, and a fresh object there is a changed reference for
+ * `useThreadListPagingState`, so both list screens re-render for nothing.
+ *
+ * Field by field rather than a generic deep compare: the slot is a flat record
+ * of primitives by contract (the opaque cursor is deliberately not in it), and
+ * adding a field to {@link ThreadListPagingState} without adding it here would
+ * silently swallow that field's updates — so the comparison lists them, and a
+ * new one fails typecheck at the type, not here. Keep the two in step.
+ */
+function pagingStateEquals(a: ThreadListPagingState, b: ThreadListPagingState): boolean {
+  return (
+    a.hasMore === b.hasMore &&
+    a.loadingMore === b.loadingMore &&
+    a.loadMoreFailed === b.loadMoreFailed &&
+    a.totalCount === b.totalCount &&
+    a.reopenCount === b.reopenCount
+  );
 }
 
 export const createThreadsSlice: StateCreator<
@@ -200,6 +225,12 @@ export const createThreadsSlice: StateCreator<
       set({ threadListPaging: remaining }, false, 'threads/setThreadListPaging');
       return;
     }
+    // An unchanged transition keeps the EXISTING object: the selector hands
+    // the raw slot to the screen and zustand compares it with `Object.is`, so
+    // a fresh literal of identical values is a re-render of both lists for no
+    // visible change.
+    const current = threadListPaging[conversationId];
+    if (current !== undefined && pagingStateEquals(current, state)) return;
     set(
       { threadListPaging: { ...threadListPaging, [conversationId]: state } },
       false,

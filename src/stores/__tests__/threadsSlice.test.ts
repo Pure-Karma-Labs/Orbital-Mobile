@@ -917,4 +917,38 @@ describe('threadsSlice — threadListPaging (#923)', () => {
 
     expect(store.getState().threadListPaging).toEqual({});
   });
+
+  it('keeps the existing slot when a transition changes nothing', () => {
+    // The walk commits on every transition, and a head refresh of an idle
+    // walk re-states the same values. A fresh object there is a changed
+    // reference for `useThreadListPagingState` — i.e. a re-render of the whole
+    // list for no visible change.
+    const store = makeStore();
+    store.getState().setThreadListPaging('conv-1', slot);
+    const written = store.getState().threadListPaging['conv-1'];
+    const record = store.getState().threadListPaging;
+
+    store.getState().setThreadListPaging('conv-1', { ...slot });
+
+    expect(store.getState().threadListPaging['conv-1']).toBe(written);
+    // The containing record is untouched too, so no other subscriber wakes.
+    expect(store.getState().threadListPaging).toBe(record);
+  });
+
+  it.each([
+    ['hasMore', { hasMore: false }],
+    ['loadingMore', { loadingMore: true }],
+    ['loadMoreFailed', { loadMoreFailed: true }],
+    ['totalCount', { totalCount: 121 }],
+    ['reopenCount', { reopenCount: 1 }],
+  ])('writes a new slot when %s changes', (_field, change) => {
+    const store = makeStore();
+    store.getState().setThreadListPaging('conv-1', slot);
+    const written = store.getState().threadListPaging['conv-1'];
+
+    store.getState().setThreadListPaging('conv-1', { ...slot, ...change });
+
+    expect(store.getState().threadListPaging['conv-1']).not.toBe(written);
+    expect(store.getState().threadListPaging['conv-1']).toEqual({ ...slot, ...change });
+  });
 });

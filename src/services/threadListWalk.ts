@@ -31,6 +31,20 @@
  * not change. So the pair is only ever cleared TOGETHER, by {@link reopenWalk},
  * and {@link commit} refuses any other combination in development.
  *
+ * ## A page in flight belongs to ONE walk, and says so
+ *
+ * A request cannot be cancelled, so a page can land after the list was
+ * reopened (a `tail: 'drop'` refresh, an `INVALID_CURSOR`) or left. Applying it
+ * then re-adds rows the reopen just dropped and adopts a cursor from a walk
+ * that no longer exists — a hole in the list until the next leave — or, after a
+ * leave, re-lists up to a page of rows that nothing will ever trim. So every
+ * entry carries an EPOCH: {@link beginWalkPage} hands it out, every reset
+ * ({@link openWalk}, {@link reopenWalk}, and a {@link leaveWalk} followed by a
+ * fresh open) takes a new one, and a page whose epoch has moved is dropped
+ * without touching the store or the walk. The counter is module-level and only
+ * ever increases, so an epoch handed out before a `leaveWalk` cannot match the
+ * entry a later open creates.
+ *
  * The first walk page is deliberately CURSORLESS: the head page is
  * `activity_desc` and its cursor is bound to that sort, while the walk runs on
  * `created_desc` (an `activity_desc` walk costs O(group size) per page
@@ -73,7 +87,8 @@ export interface LoadMoreResult {
    * - `exhausted` / `unsupported` — no further page will be requested.
    * - `reopened` — the cursor was rejected; the list is back at its head.
    * - `rate-limited` — a 429; retryable, nothing applied.
-   * - `skipped` — nothing to do: no walk, or a page was discarded as stale.
+   * - `skipped` — nothing to do: no walk, a page was discarded as stale, or
+   *   the walk it was claimed from was superseded while it was in flight.
    */
   status:
     | 'loaded'
@@ -107,6 +122,8 @@ export interface ThreadWalkSnapshot {
   failed: boolean;
   invalidCursorCount: number;
   totalCount: number;
+  /** The generation a page must match to be applied. See the module docstring. */
+  epoch: number;
 }
 
 interface WalkEntry {
@@ -124,6 +141,12 @@ interface WalkEntry {
   /** `INVALID_CURSOR` responses in this viewing; the second one stops paging. */
   invalidCursorCount: number;
   totalCount: number;
+  /**
+   * The generation of THIS walk. Drawn from the module-level counter, so it is
+   * unique across the lifetime of the process and a deleted entry's epoch can
+   * never be re-issued.
+   */
+  epoch: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +154,17 @@ interface WalkEntry {
 // ---------------------------------------------------------------------------
 
 const walks = new Map<string, WalkEntry>();
+
+/**
+ * Source of walk epochs. MODULE-level, never per entry: `leaveWalk` deletes the
+ * entry, and a per-entry counter would start a re-opened conversation back at a
+ * number a page still in flight is carrying. Monotonic for the life of the
+ * process, so an epoch issued before a leave matches nothing afterwards.
+ *
+ * NOT reset by {@link clearThreadListPaging}, deliberately — a wipe is exactly
+ * the moment a page in flight must not match anything that comes after it.
+ */
+let nextWalkEpoch = 1;
 
 /**
  * Statuses that will request another page, and therefore need a cursor once a
@@ -155,6 +189,7 @@ function makeEntry(): WalkEntry {
     failed: false,
     invalidCursorCount: 0,
     totalCount: 0,
+    epoch: nextWalkEpoch++,
   };
 }
 
@@ -219,14 +254,27 @@ export function peekWalk(conversationId: string): ThreadWalkSnapshot | null {
     failed: entry.failed,
     invalidCursorCount: entry.invalidCursorCount,
     totalCount: entry.totalCount,
+    epoch: entry.epoch,
   };
+}
+
+/**
+ * Is the walk a page was claimed from still the walk this conversation has?
+ *
+ * The question every caller holding an in-flight page must ask before it
+ * applies ANYTHING — the store merge included, which is why the check lives
+ * here rather than inside {@link applyWalkPage} alone.
+ */
+export function isWalkCurrent(conversationId: string, epoch: number): boolean {
+  const entry = walks.get(conversationId);
+  return entry !== undefined && entry.epoch === epoch;
 }
 
 export function getWalkInflight(conversationId: string): Promise<LoadMoreResult> | null {
   return walks.get(conversationId)?.inflight ?? null;
 }
 
-/** Record (or clear) the in-flight page. Never creates an entry. */
+/** Record the in-flight page. Never creates an entry. */
 export function setWalkInflight(
   conversationId: string,
   inflight: Promise<LoadMoreResult> | null,
@@ -234,6 +282,22 @@ export function setWalkInflight(
   const entry = walks.get(conversationId);
   if (entry === undefined) return;
   entry.inflight = inflight;
+}
+
+/**
+ * Clear the in-flight page, but only if it is still THIS one.
+ *
+ * A settled page runs its cleanup after the walk may already have been left
+ * and re-opened; clearing unconditionally would drop the NEW walk's single
+ * flight guard and let a second request go out against the same cursor.
+ */
+export function clearWalkInflight(
+  conversationId: string,
+  inflight: Promise<LoadMoreResult>,
+): void {
+  const entry = walks.get(conversationId);
+  if (entry === undefined || entry.inflight !== inflight) return;
+  entry.inflight = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,12 +344,15 @@ export function refreshWalk(
 /**
  * Claim the right to request the next page.
  *
- * Returns the cursor to send (`null` on the walk's first page), or `null`
- * wrapped in a refusal when the walk cannot page: see {@link ThreadWalkStatus}.
+ * Returns the cursor to send (`null` on the walk's first page) together with
+ * the EPOCH the page must still match when it lands, or `null` wrapped in a
+ * refusal when the walk cannot page: see {@link ThreadWalkStatus}.
  */
 export function beginWalkPage(
   conversationId: string,
-): { ok: true; cursor: string | null } | { ok: false; status: LoadMoreResult['status'] } {
+):
+  | { ok: true; cursor: string | null; epoch: number }
+  | { ok: false; status: LoadMoreResult['status'] } {
   const entry = walks.get(conversationId);
   if (entry === undefined) return { ok: false, status: 'skipped' };
   if (entry.status === 'exhausted') return { ok: false, status: 'exhausted' };
@@ -296,13 +363,25 @@ export function beginWalkPage(
   entry.status = 'loading';
   entry.failed = false;
   commit(conversationId, entry);
-  return { ok: true, cursor };
+  return { ok: true, cursor, epoch: entry.epoch };
 }
 
-/** A walk page was applied to the store: advance the cursor and grow the tail. */
-export function applyWalkPage(conversationId: string, page: WalkPageOutcome): void {
+/**
+ * A walk page was applied to the store: advance the cursor and grow the tail.
+ *
+ * `epoch` is the one {@link beginWalkPage} handed out. A page from a superseded
+ * walk is dropped here as well as at the caller's store write — the two checks
+ * are deliberate belt and braces, because this is the function that would adopt
+ * the stale cursor.
+ */
+export function applyWalkPage(
+  conversationId: string,
+  epoch: number,
+  page: WalkPageOutcome,
+): void {
   const entry = walks.get(conversationId);
   if (entry === undefined) return;
+  if (entry.epoch !== epoch) return;
 
   const head = new Set(entry.headIds);
   for (const id of page.ids) {
@@ -406,6 +485,10 @@ export function noteInvalidCursor(conversationId: string): 'reopen' | 'stop' {
  *
  * Returns the head ids the caller should keep (so it can trim the store to
  * match), or `null` when there is no walk to reset.
+ *
+ * A page in flight is SUPERSEDED, not awaited: the epoch moves, so the page
+ * lands on nothing, and the single-flight slot is released so the member can
+ * walk the reopened list without waiting for a response that will be dropped.
  */
 export function reopenWalk(conversationId: string): readonly string[] | null {
   const entry = walks.get(conversationId);
@@ -414,6 +497,8 @@ export function reopenWalk(conversationId: string): readonly string[] | null {
   entry.tailIds.clear();
   entry.cursor = null;
   entry.failed = false;
+  entry.epoch = nextWalkEpoch++;
+  entry.inflight = null;
   // `exhausted` / `unsupported` survive a reopen only as far as the next head
   // page, which calls `openWalk` and decides afresh. Anything else can page.
   if (entry.status === 'loading' || entry.status === 'rate-limited') entry.status = 'idle';
@@ -426,7 +511,9 @@ export function reopenWalk(conversationId: string): readonly string[] | null {
  *
  * Returns the head ids so the caller can trim the store's tail, or `null` when
  * there was no walk. The in-flight page (if any) is abandoned — it cannot be
- * cancelled, and `applyWalkPage` on a missing entry is a no-op.
+ * cancelled, and its epoch dies with the entry: because epochs come from a
+ * module-level counter, a conversation opened again later takes a NEW one, so
+ * the abandoned page cannot be applied to it either.
  */
 export function leaveWalk(conversationId: string): readonly string[] | null {
   const entry = walks.get(conversationId);

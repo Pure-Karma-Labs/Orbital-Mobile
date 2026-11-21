@@ -33,10 +33,12 @@ import { ApiError, BlockedRecipientError, ValidationError } from './api/errors';
 import {
   applyWalkPage,
   beginWalkPage,
+  clearWalkInflight,
   discardWalkPage,
   failWalkPage,
   getWalkInflight,
   hasWalkedTail,
+  isWalkCurrent,
   leaveWalk,
   noteInvalidCursor,
   openWalk,
@@ -1186,7 +1188,10 @@ interface ThreadPageResult {
   totalCount: number;
   /** Ids this page ADDED to the conversation's list. */
   newIdCount: number;
-  /** True when nothing was applied because the page went stale (#906). */
+  /**
+   * True when nothing was applied because the page went stale: the blocked set
+   * moved under it (#906), or the walk it belongs to was superseded (#923).
+   */
   discarded: boolean;
 }
 
@@ -1218,7 +1223,17 @@ async function fetchAndApplyThreadPage(
   groupId: string,
   params: GetGroupThreadsRequest,
   apply: 'replace' | 'merge',
-  options?: { retryOn429?: boolean; discardOnBlockedChange?: boolean },
+  options?: {
+    retryOn429?: boolean;
+    discardOnBlockedChange?: boolean;
+    /**
+     * Asked immediately before anything is written (#923). `true` means the
+     * walk this page was claimed from has been superseded — reopened, or left
+     * and opened again — so the page is discarded exactly as a page that
+     * straddled a block is: no SQLite write, no store write, nothing applied.
+     */
+    isSuperseded?: () => boolean;
+  },
 ): Promise<ThreadPageResult> {
   // Captured BEFORE the request so `reconcileServerRecency` can tell a
   // per-viewer server lowering (#897) apart from a reply that landed while the
@@ -1296,7 +1311,16 @@ async function fetchAndApplyThreadPage(
   // are now blocked, and appending them would need a second pass to remove.
   // The head refresh does NOT take this branch — it still applies, with the
   // recency guard below, exactly as it did before #923.
-  if (options?.discardOnBlockedChange === true && blockedSetChanged) {
+  //
+  // The SECOND discard, same shape and the same place in the order: the list
+  // was reopened or left while this page was in flight (#923). It is checked
+  // HERE, with the last awaits (the group key, the row mapping) behind it and
+  // only synchronous work between this point and the store write, so a walk
+  // that moved cannot have its rows re-added by a page it no longer owns.
+  if (
+    (options?.discardOnBlockedChange === true && blockedSetChanged) ||
+    options?.isSuperseded?.() === true
+  ) {
     return {
       threads: [],
       rawIds,
@@ -1439,7 +1463,8 @@ export async function loadThreadsForGroup(
  * - `rate-limited` — a 429. Nothing was applied, the cursor is intact, and
  *   NOTHING is chained: the member taps to retry.
  * - `skipped` — no walk for this conversation (the list was never opened), a
- *   page is already in flight, or the page went stale (#906).
+ *   page is already in flight, the page went stale (#906), or the walk it was
+ *   claimed from was superseded by a reopen or a leave while it was in flight.
  *
  * Any other failure rejects, with `loadMoreFailed` already set for the footer.
  */
@@ -1456,26 +1481,51 @@ export function loadMoreThreadsForGroup(groupId: string): Promise<LoadMoreResult
     });
   }
 
-  const run = runWalkPage(groupId, claim.cursor).finally(() => {
-    setWalkInflight(groupId, null);
+  const run = runWalkPage(groupId, claim.cursor, claim.epoch).finally(() => {
+    // Only if it is still OURS: a leave and a re-open between the request and
+    // this cleanup would otherwise clear the new walk's single-flight slot.
+    clearWalkInflight(groupId, run);
   });
   setWalkInflight(groupId, run);
   return run;
 }
 
-async function runWalkPage(groupId: string, cursor: string | null): Promise<LoadMoreResult> {
+async function runWalkPage(
+  groupId: string,
+  cursor: string | null,
+  epoch: number,
+): Promise<LoadMoreResult> {
   const params: GetGroupThreadsRequest =
     cursor === null
       ? { sort: 'created_desc', limit: WALK_PAGE_LIMIT }
       : { sort: 'created_desc', limit: WALK_PAGE_LIMIT, before: cursor };
+
+  /**
+   * This page belongs to a walk that no longer exists (#923 review).
+   *
+   * `'skipped'` is the honest answer and the one the hook already handles: it
+   * stops the follow-up loop and leaves a tappable "Load more" rather than
+   * spinning. What it must NOT do is touch the walk that replaced ours —
+   * `failWalkPage` would light the new walk's retry row, and `discardWalkPage`
+   * would take its own in-flight page out of `loading`.
+   */
+  const superseded = (): LoadMoreResult => ({
+    status: 'skipped',
+    newIdCount: 0,
+    hasMore: walkHasMore(groupId),
+  });
 
   let page: ThreadPageResult;
   try {
     page = await fetchAndApplyThreadPage(groupId, params, 'merge', {
       retryOn429: false,
       discardOnBlockedChange: true,
+      isSuperseded: () => !isWalkCurrent(groupId, epoch),
     });
   } catch (e) {
+    // Checked before every walk mutation on the failure path too: a reopen or
+    // a leave outranks whatever this page's error has to say.
+    if (!isWalkCurrent(groupId, epoch)) return superseded();
     if (e instanceof ValidationError && e.reason === 'INVALID_CURSOR') {
       if (noteInvalidCursor(groupId) === 'stop') {
         return { status: 'unsupported', newIdCount: 0, hasMore: false };
@@ -1492,12 +1542,14 @@ async function runWalkPage(groupId: string, cursor: string | null): Promise<Load
     throw e;
   }
 
+  if (!isWalkCurrent(groupId, epoch)) return superseded();
+
   if (page.discarded) {
     discardWalkPage(groupId);
     return { status: 'skipped', newIdCount: 0, hasMore: walkHasMore(groupId) };
   }
 
-  applyWalkPage(groupId, {
+  applyWalkPage(groupId, epoch, {
     ids: page.rawIds,
     hasMore: page.hasMore,
     nextCursor: page.nextCursor,

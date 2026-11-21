@@ -3208,6 +3208,225 @@ describe('#923 INVALID_CURSOR reopen', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #923 review — a page in flight across a reopen or a leave
+//
+// A request cannot be cancelled. Before the walk epoch, a page that landed
+// after the list was reopened (own-import settle, unblock, INVALID_CURSOR) or
+// left was still merged: it re-added the rows the reopen had just dropped and
+// adopted a cursor from a walk that no longer existed, leaving a hole in the
+// list until the next leave — or, after a leave, re-listed up to 100 rows that
+// nothing would ever trim.
+// ---------------------------------------------------------------------------
+
+describe('#923 a page in flight across a reset', () => {
+  /** A load-more whose response this test releases by hand. */
+  function deferWalkPage(): {
+    settle: (body: ListThreadsResponse) => void;
+    fail: (e: Error) => void;
+  } {
+    let settle: (body: ListThreadsResponse) => void = () => {};
+    let fail: (e: Error) => void = () => {};
+    mockGetGroupThreads.mockImplementationOnce(
+      () =>
+        new Promise<ListThreadsResponse>((resolve, reject) => {
+          settle = resolve;
+          fail = reject;
+        }),
+    );
+    return { settle: (body) => settle(body), fail: (e) => fail(e) };
+  }
+
+  /** The page the walk was asking for — one row beyond the head. */
+  function walkPageBody(): ListThreadsResponse {
+    return listPage({
+      threads: [makeThreadListItem({ threadId: 'tail-1' })],
+      totalCount: 500,
+      hasMore: true,
+      nextCursor: 'deep-cursor',
+    });
+  }
+
+  /** The slot the walk last wrote for this conversation. */
+  function lastSlot(): Record<string, unknown> {
+    const calls = mockSetThreadListPaging.mock.calls as unknown as [string, unknown][];
+    return calls[calls.length - 1][1] as Record<string, unknown>;
+  }
+
+  it('drops a page superseded by a tail: drop reopen, cursor and rows together', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const page = loadMoreThreadsForGroup('group-1');
+
+    // The reopen lands first: an own import settling, or an unblock.
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'head-1' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'head-cursor-2',
+      }),
+    );
+    await loadThreadsForGroup('group-1', { tail: 'drop' });
+    mockMergeThreads.mockClear();
+    mockSaveThreadBatch.mockClear();
+
+    pending.settle(walkPageBody());
+    const result = await page;
+
+    expect(result).toEqual({ status: 'skipped', newIdCount: 0, hasMore: true });
+    // Nothing applied — not the store, not SQLite — so the reopened list is
+    // still exactly its head page.
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockSaveThreadBatch).not.toHaveBeenCalled();
+    // And the deep cursor was NOT adopted: the walk is back at its start.
+    expect(peekWalk('group-1')).toMatchObject({
+      tailSize: 0,
+      hasCursor: false,
+      status: 'idle',
+      failed: false,
+    });
+    expect(lastSlot()).toMatchObject({ loadingMore: false, loadMoreFailed: false });
+  });
+
+  it('drops a page superseded by leaveThreadList, re-listing nothing', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const page = loadMoreThreadsForGroup('group-1');
+
+    leaveThreadList('group-1');
+    mockMergeThreads.mockClear();
+    mockSaveThreadBatch.mockClear();
+
+    pending.settle(walkPageBody());
+    const result = await page;
+
+    expect(result).toEqual({ status: 'skipped', newIdCount: 0, hasMore: false });
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockSaveThreadBatch).not.toHaveBeenCalled();
+    // The walk stays forgotten: a late page must not resurrect a slot for a
+    // list no screen is showing.
+    expect(peekWalk('group-1')).toBeNull();
+    expect(mockSetThreadListPaging).toHaveBeenLastCalledWith('group-1', null);
+  });
+
+  it('drops a page superseded by a leave AND a re-open of the same conversation', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const page = loadMoreThreadsForGroup('group-1');
+
+    leaveThreadList('group-1');
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'head-1' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'head-cursor',
+      }),
+    );
+    await loadThreadsForGroup('group-1');
+    mockMergeThreads.mockClear();
+    mockSaveThreadBatch.mockClear();
+
+    pending.settle(walkPageBody());
+    const result = await page;
+
+    expect(result.status).toBe('skipped');
+    expect(mockMergeThreads).not.toHaveBeenCalled();
+    expect(mockSaveThreadBatch).not.toHaveBeenCalled();
+    expect(peekWalk('group-1')).toMatchObject({
+      tailSize: 0,
+      hasCursor: false,
+      status: 'idle',
+      failed: false,
+    });
+    // The NEW walk is neither stuck loading nor wearing the old page's
+    // failure: the footer of the re-opened list is clean.
+    expect(lastSlot()).toMatchObject({ loadingMore: false, loadMoreFailed: false });
+  });
+
+  it('swallows the failure of a superseded page instead of marking the new walk failed', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const page = loadMoreThreadsForGroup('group-1');
+
+    leaveThreadList('group-1');
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor' }),
+    );
+    await loadThreadsForGroup('group-1');
+
+    pending.fail(new ServerError(500));
+
+    await expect(page).resolves.toEqual({ status: 'skipped', newIdCount: 0, hasMore: true });
+    expect(peekWalk('group-1')).toMatchObject({ failed: false, status: 'idle' });
+  });
+
+  it('a superseded page does not take the new walk out of loading', async () => {
+    // The stale page settles while the REPLACEMENT walk has a page of its own
+    // in flight. Discarding it as if it were ours (#906's path) would clear
+    // `loadingMore` under a spinner that is still waiting for its response.
+    await openWalkedList(['head-1']);
+    const stalePage = deferWalkPage();
+    const stale = loadMoreThreadsForGroup('group-1');
+
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor-2' }),
+    );
+    await loadThreadsForGroup('group-1', { tail: 'drop' });
+
+    const freshPage = deferWalkPage();
+    const fresh = loadMoreThreadsForGroup('group-1');
+    expect(peekWalk('group-1')?.status).toBe('loading');
+
+    stalePage.settle(walkPageBody());
+    await expect(stale).resolves.toMatchObject({ status: 'skipped' });
+
+    expect(peekWalk('group-1')?.status).toBe('loading');
+    expect(lastSlot()).toMatchObject({ loadingMore: true, loadMoreFailed: false });
+
+    freshPage.settle(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'tail-9' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'cursor-9',
+      }),
+    );
+    await expect(fresh).resolves.toMatchObject({ status: 'loaded' });
+  });
+
+  it('a reopen frees the single-flight slot, so the new walk can page at once', async () => {
+    await openWalkedList(['head-1']);
+    const pending = deferWalkPage();
+    const stale = loadMoreThreadsForGroup('group-1');
+
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({ totalCount: 500, hasMore: true, nextCursor: 'head-cursor-2' }),
+    );
+    await loadThreadsForGroup('group-1', { tail: 'drop' });
+
+    // The new walk's first page goes out while the stale one is still open.
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'tail-9' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'cursor-9',
+      }),
+    );
+    const fresh = await loadMoreThreadsForGroup('group-1');
+
+    expect(fresh.status).toBe('loaded');
+    expect(peekWalk('group-1')).toMatchObject({ tailSize: 1, hasCursor: true });
+
+    // …and the stale one settling afterwards still changes nothing.
+    pending.settle(walkPageBody());
+    await expect(stale).resolves.toMatchObject({ status: 'skipped' });
+    expect(peekWalk('group-1')).toMatchObject({ tailSize: 1, hasCursor: true });
+  });
+});
+
 describe('#923 search reaches rows outside the entity map', () => {
   it('loads missing ids from SQLite and caches them as entities only', () => {
     const cached = makeStoredThread({ id: 'thread-cold' });

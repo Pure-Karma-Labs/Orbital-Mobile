@@ -35,10 +35,12 @@ import {
   applyWalkPage,
   beginWalkPage,
   clearThreadListPaging,
+  clearWalkInflight,
   discardWalkPage,
   failWalkPage,
   getWalkInflight,
   hasWalkedTail,
+  isWalkCurrent,
   leaveWalk,
   noteInvalidCursor,
   openWalk,
@@ -80,9 +82,15 @@ function openWithMore(ids: string[] = ['head-1', 'head-2']): void {
 
 /** Walk one page forward, which is what grows the tail. */
 function walkOnePage(ids: string[], nextCursor: string | undefined, hasMore: boolean): void {
-  const claim = beginWalkPage(CONV);
-  expect(claim.ok).toBe(true);
-  applyWalkPage(CONV, { ids, hasMore, nextCursor, totalCount: 500 });
+  const claim = claimPage();
+  applyWalkPage(CONV, claim.epoch, { ids, hasMore, nextCursor, totalCount: 500 });
+}
+
+/** Claim a page and assert the claim succeeded, narrowing to the epoch. */
+function claimPage(conversationId = CONV): { cursor: string | null; epoch: number } {
+  const claim = beginWalkPage(conversationId);
+  if (!claim.ok) throw new Error(`expected a page claim, got ${claim.status}`);
+  return { cursor: claim.cursor, epoch: claim.epoch };
 }
 
 beforeEach(() => {
@@ -196,15 +204,23 @@ describe('beginWalkPage / applyWalkPage (#923)', () => {
   it('hands out no cursor on the first page and the stored one afterwards', () => {
     openWithMore();
 
-    const first = beginWalkPage(CONV);
-    expect(first).toEqual({ ok: true, cursor: null });
+    const first = claimPage();
+    expect(first.cursor).toBeNull();
     expect(peekWalk(CONV)?.status).toBe('loading');
     expect(slot()).toMatchObject({ hasMore: true, loadingMore: true, loadMoreFailed: false });
 
-    applyWalkPage(CONV, { ids: ['tail-1'], hasMore: true, nextCursor: 'cursor-2', totalCount: 500 });
+    applyWalkPage(CONV, first.epoch, {
+      ids: ['tail-1'],
+      hasMore: true,
+      nextCursor: 'cursor-2',
+      totalCount: 500,
+    });
 
-    const second = beginWalkPage(CONV);
-    expect(second).toEqual({ ok: true, cursor: 'cursor-2' });
+    const second = claimPage();
+    expect(second.cursor).toBe('cursor-2');
+    // The walk did not reset, so the page is still claimed against the same
+    // generation: only openWalk / reopenWalk / leaveWalk move it.
+    expect(second.epoch).toBe(first.epoch);
     expectWalkInvariant();
   });
 
@@ -269,13 +285,108 @@ describe('beginWalkPage / applyWalkPage (#923)', () => {
 
   it('ignores a page for a conversation whose walk is gone', () => {
     openWithMore();
-    beginWalkPage(CONV);
+    const claim = claimPage();
     leaveWalk(CONV);
 
-    applyWalkPage(CONV, { ids: ['tail-1'], hasMore: true, nextCursor: 'c', totalCount: 1 });
+    applyWalkPage(CONV, claim.epoch, { ids: ['tail-1'], hasMore: true, nextCursor: 'c', totalCount: 1 });
 
     expect(peekWalk(CONV)).toBeNull();
     expect(slot()).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Epochs — a page in flight across a reset
+// ---------------------------------------------------------------------------
+
+describe('walk epoch (#923 review)', () => {
+  it('a reopen supersedes the page in flight: no tail, no cursor', () => {
+    openWithMore(['head-1']);
+    const claim = claimPage();
+
+    reopenWalk(CONV);
+    applyWalkPage(CONV, claim.epoch, {
+      ids: ['tail-1'],
+      hasMore: true,
+      nextCursor: 'cursor-2',
+      totalCount: 500,
+    });
+
+    // The late page adopted nothing: no deep cursor, no re-added rows.
+    expect(peekWalk(CONV)).toMatchObject({ tailSize: 0, hasCursor: false, status: 'idle' });
+    expect(isWalkCurrent(CONV, claim.epoch)).toBe(false);
+    expectWalkInvariant();
+  });
+
+  it('a leave and a fresh open cannot be matched by the abandoned page', () => {
+    openWithMore(['head-1']);
+    const claim = claimPage();
+    leaveWalk(CONV);
+    // The same conversation, opened again — the case a per-entry counter would
+    // get wrong, because the new entry would start where the old one began.
+    openWithMore(['head-2']);
+
+    expect(isWalkCurrent(CONV, claim.epoch)).toBe(false);
+    applyWalkPage(CONV, claim.epoch, {
+      ids: ['tail-1'],
+      hasMore: true,
+      nextCursor: 'cursor-2',
+      totalCount: 500,
+    });
+
+    expect(peekWalk(CONV)).toMatchObject({ tailSize: 0, hasCursor: false, headIds: ['head-2'] });
+  });
+
+  it('an open of another conversation does not move this one’s epoch', () => {
+    openWithMore(['head-1']);
+    const claim = claimPage();
+
+    openWalk('conv-2', { ids: ['other-1'], hasMore: true, hasCursor: true, totalCount: 9 });
+
+    expect(isWalkCurrent(CONV, claim.epoch)).toBe(true);
+  });
+
+  it('a refresh keeps the page in flight current — it is the same walk', () => {
+    openWithMore(['head-1']);
+    const claim = claimPage();
+
+    refreshWalk(CONV, { ids: ['head-1', 'head-2'], totalCount: 501 });
+
+    expect(isWalkCurrent(CONV, claim.epoch)).toBe(true);
+    applyWalkPage(CONV, claim.epoch, {
+      ids: ['tail-1'],
+      hasMore: true,
+      nextCursor: 'cursor-2',
+      totalCount: 501,
+    });
+    expect(peekWalk(CONV)).toMatchObject({ tailSize: 1, hasCursor: true });
+  });
+
+  it('releases the single-flight slot on a reopen, and never clears a newer one', async () => {
+    openWithMore();
+    const stale = Promise.resolve<LoadMoreResult>({
+      status: 'skipped',
+      newIdCount: 0,
+      hasMore: true,
+    });
+    setWalkInflight(CONV, stale);
+
+    reopenWalk(CONV);
+    expect(getWalkInflight(CONV)).toBeNull();
+
+    // The new walk's own page is in flight when the stale one settles.
+    const fresh = Promise.resolve<LoadMoreResult>({
+      status: 'loaded',
+      newIdCount: 1,
+      hasMore: true,
+    });
+    setWalkInflight(CONV, fresh);
+    clearWalkInflight(CONV, stale);
+
+    expect(getWalkInflight(CONV)).toBe(fresh);
+    clearWalkInflight(CONV, fresh);
+    expect(getWalkInflight(CONV)).toBeNull();
+    await Promise.all([stale, fresh]);
   });
 });
 
@@ -294,7 +405,7 @@ describe('failWalkPage / discardWalkPage (#923)', () => {
     expect(peekWalk(CONV)).toMatchObject({ status: 'idle', hasCursor: true, failed: true });
     expect(slot()).toMatchObject({ hasMore: true, loadingMore: false, loadMoreFailed: true });
     // The retry asks for the SAME page.
-    expect(beginWalkPage(CONV)).toEqual({ ok: true, cursor: 'cursor-2' });
+    expect(claimPage().cursor).toBe('cursor-2');
     expectWalkInvariant();
   });
 
@@ -323,7 +434,7 @@ describe('failWalkPage / discardWalkPage (#923)', () => {
     beginWalkPage(CONV);
     failWalkPage(CONV, 'rate-limited');
 
-    expect(beginWalkPage(CONV)).toEqual({ ok: true, cursor: 'cursor-2' });
+    expect(claimPage().cursor).toBe('cursor-2');
     expect(slot()).toMatchObject({ loadingMore: true, loadMoreFailed: false });
   });
 
@@ -340,7 +451,7 @@ describe('failWalkPage / discardWalkPage (#923)', () => {
       tailSize: 1,
       failed: false,
     });
-    expect(beginWalkPage(CONV)).toEqual({ ok: true, cursor: 'cursor-2' });
+    expect(claimPage().cursor).toBe('cursor-2');
     expectWalkInvariant();
   });
 
@@ -574,8 +685,8 @@ describe('the walk invariant (#923)', () => {
     // (The real code routes that case to `unsupported`; this proves the guard
     // would catch a future edit that did not.)
     openWithMore(['head-1']);
-    beginWalkPage(CONV);
-    applyWalkPage(CONV, { ids: ['tail-1'], hasMore: true, nextCursor: undefined, totalCount: 9 });
+    const claim = claimPage();
+    applyWalkPage(CONV, claim.epoch, { ids: ['tail-1'], hasMore: true, nextCursor: undefined, totalCount: 9 });
 
     expect(peekWalk(CONV)?.status).not.toBe('idle');
     expect(peekWalk(CONV)?.tailSize).toBe(1);

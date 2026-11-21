@@ -2118,7 +2118,9 @@ export async function createNewThread(
  * BOUNDED since #923: a walked orbit can hold thousands of cached rows, and
  * this read runs on every open, synchronously, for a list the server is about
  * to replace. See `getRecentThreadsForConversation` for why a LIMIT is sound
- * on this particular read and nowhere else.
+ * on this particular read and nowhere else — and why it is taken in the
+ * screen's own ACTIVITY order, so the bound cuts the rows that would render
+ * last rather than the ones that would render first.
  */
 export function hydrateThreadsFromLocal(conversationId: string): void {
   if (!isDatabaseInitialized()) return;

@@ -16,7 +16,7 @@
 import { queryOne, queryMany, execute } from '../queryHelpers';
 import { getDatabase } from '../connection';
 import { isDatabaseInitialized } from '../connection';
-import { toMillis } from '../timestampUnits';
+import { SECONDS_CEILING, toMillis } from '../timestampUnits';
 import type { Thread } from '../../types/store';
 
 // ============================================================
@@ -179,19 +179,58 @@ export function getThreadsForConversation(conversationId: string): Thread[] {
 }
 
 /**
+ * Both thread lists order by ACTIVITY, so a bounded read of them must too
+ * (`utils/threadActivity`: `threadActivityAt` is the newer of `created_at` and
+ * `last_reply_at`). Ordering the LIMIT by `created_at` alone cut an old thread
+ * replied to today out of the placeholder although it renders first — and
+ * offline, where nothing replaces the placeholder, it never appeared at all.
+ *
+ * NORMALISED INLINE, because this is a bounded read over a MIXED-UNIT column:
+ * rows written before #844 hold epoch seconds (see `../timestampUnits`), which
+ * are ~1000x smaller than ms. Comparing the two columns raw would rank a
+ * legacy row's seconds against a current row's ms and make the MAX meaningless;
+ * the ceiling is bound as a parameter (never interpolated) and multiplies a
+ * seconds value up, exactly as `toMillis` does on the way out.
+ *
+ * `last_reply_at` is nullable, and SQLite's scalar `MAX` returns NULL if ANY
+ * argument is NULL — which would sort every thread with no reply last. Hence
+ * the explicit NULL branch to 0 rather than `COALESCE` around the whole thing.
+ *
+ * Ties keep `created_at DESC` after the activity key, mirroring
+ * `compareThreadsByActivityDesc`, so the cut is stable between two rows last
+ * active in the same millisecond.
+ */
+const RECENT_THREADS_ACTIVITY_ORDER = `ORDER BY MAX(
+      CASE WHEN created_at < ? THEN created_at * 1000 ELSE created_at END,
+      CASE
+        WHEN last_reply_at IS NULL THEN 0
+        WHEN last_reply_at < ? THEN last_reply_at * 1000
+        ELSE last_reply_at
+      END
+    ) DESC,
+    CASE WHEN created_at < ? THEN created_at * 1000 ELSE created_at END DESC`;
+
+/**
  * The most recent `limit` threads for a conversation — the PRE-NETWORK
  * placeholder `hydrateThreadsFromLocal` paints before the list request lands
  * (#923).
  *
+ * "Most recent" means most recently ACTIVE, the order both lists render in:
+ * see {@link RECENT_THREADS_ACTIVITY_ORDER} for the expression and for why the
+ * units are normalised inside it.
+ *
  * WHY A `LIMIT` IS SAFE HERE AND NOWHERE ELSE. The file-level rule (and the
  * one on {@link getThreadsForConversation}) forbids LIMIT/OFFSET/WHERE on
  * these columns because rows written before #844 hold epoch SECONDS, so the
- * raw SQL order is a hint rather than the mapped order: a seconds value is
- * ~1000x smaller than a ms one, which puts every legacy row at the END of
- * `ORDER BY created_at DESC`. A LIMIT therefore cuts exactly the rows that
- * would sort last anyway — and in a read whose entire output is replaced by
- * the server's own page a moment later. Nothing is reconciled, deleted or
- * counted from this result; it exists so the screen is not blank.
+ * raw SQL order is a hint rather than the mapped order. This read answers that
+ * by normalising both columns in the ORDER BY, so its cut is taken on the same
+ * value the screen sorts by — and it is still a read whose entire output is
+ * replaced by the server's own page a moment later. Nothing is reconciled,
+ * deleted or counted from this result; it exists so the screen is not blank.
+ *
+ * There is still NO range predicate (`WHERE`) on either column, and adding one
+ * needs a backfill migration first — a `WHERE` decides what exists, where a
+ * LIMIT only decides what is painted early.
  *
  * Any read that DECIDES something (pruning, reconciliation, export) must keep
  * using the unbounded one and bound itself on the mapped ms value.
@@ -208,8 +247,10 @@ export function getRecentThreadsForConversation(
   if (!Number.isFinite(limit) || limit <= 0) return [];
 
   const rows = queryMany<ThreadRow>(
-    'SELECT * FROM orbital_threads WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?',
-    [conversationId, Math.floor(limit)],
+    `SELECT * FROM orbital_threads WHERE conversation_id = ?
+    ${RECENT_THREADS_ACTIVITY_ORDER}
+    LIMIT ?`,
+    [conversationId, SECONDS_CEILING, SECONDS_CEILING, SECONDS_CEILING, Math.floor(limit)],
   );
 
   return rows.map(mapRowToThread);

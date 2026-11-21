@@ -323,6 +323,12 @@ export function useThreadListPaging(options: UseThreadListPagingOptions): Thread
           // belongs to `target`, which is correct — but nothing further is
           // this loop's business.
           if (!mountedRef.current || conversationRef.current !== target) break;
+          // Searching STARTED while that page was in flight (#923 review).
+          // `disabled` is read here and not only at loop entry: the search
+          // overlay replaces the list, so chaining up to four more pages
+          // behind it spends the shared rate-limit budget on rows nobody can
+          // see, and the footer that would report them is gone.
+          if (disabledRef.current) break;
 
           if (result.status === 'rate-limited') {
             // Difference 3: nothing is chained behind a 429.

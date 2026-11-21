@@ -185,6 +185,33 @@ describe('useThreadListPaging — one page per end-reach', () => {
     expect(mockLoadMore).not.toHaveBeenCalled();
     expect(h.result.current.footer).toBeNull();
   });
+
+  it('stops chaining when a search starts while a page is in flight', async () => {
+    // Every page adds nothing, so without the re-check this walk would chain
+    // its full four follow-ups behind an overlay that hides the list.
+    let release: (r: LoadMoreResult) => void = () => {};
+    mockLoadMore.mockImplementation(
+      () =>
+        new Promise<LoadMoreResult>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    const h = renderPaging();
+    act(() => {
+      h.result.current.onEndReached();
+    });
+    expect(mockLoadMore).toHaveBeenCalledTimes(1);
+
+    h.rerender({ disabled: true });
+    await act(async () => {
+      release(result({ newIdCount: 0 }));
+    });
+
+    expect(mockLoadMore).toHaveBeenCalledTimes(1);
+    expect(h.result.current.loading).toBe(false);
+    expect(h.result.current.footer).toBeNull();
+  });
 });
 
 describe('useThreadListPaging — the follow-up loop', () => {

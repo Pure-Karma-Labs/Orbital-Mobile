@@ -61,19 +61,28 @@ function resolveRecency(
  * `useThreadListPagingState`, so both list screens re-render for nothing.
  *
  * Field by field rather than a generic deep compare: the slot is a flat record
- * of primitives by contract (the opaque cursor is deliberately not in it), and
- * adding a field to {@link ThreadListPagingState} without adding it here would
- * silently swallow that field's updates — so the comparison lists them, and a
- * new one fails typecheck at the type, not here. Keep the two in step.
+ * of primitives by contract (the opaque cursor is deliberately not in it). The
+ * fields come from {@link PAGING_STATE_KEYS}, a `Record` over every key of
+ * {@link ThreadListPagingState}, so a field added to the type without being
+ * added there is a compile error in this file. A hand-written list would
+ * instead treat the new field as always equal and silently swallow its updates.
  */
-function pagingStateEquals(a: ThreadListPagingState, b: ThreadListPagingState): boolean {
-  return (
-    a.hasMore === b.hasMore &&
-    a.loadingMore === b.loadingMore &&
-    a.loadMoreFailed === b.loadMoreFailed &&
-    a.totalCount === b.totalCount &&
-    a.reopenCount === b.reopenCount
-  );
+const PAGING_STATE_KEYS: Record<keyof ThreadListPagingState, true> = {
+  hasMore: true,
+  loadingMore: true,
+  loadMoreFailed: true,
+  totalCount: true,
+  reopenCount: true,
+};
+const PAGING_STATE_KEY_LIST = Object.keys(
+  PAGING_STATE_KEYS,
+) as (keyof ThreadListPagingState)[];
+
+function pagingStateEquals(
+  a: ThreadListPagingState,
+  b: ThreadListPagingState,
+): boolean {
+  return PAGING_STATE_KEY_LIST.every((key) => a[key] === b[key]);
 }
 
 export const createThreadsSlice: StateCreator<

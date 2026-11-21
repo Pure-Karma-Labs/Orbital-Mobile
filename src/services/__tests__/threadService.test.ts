@@ -3120,6 +3120,84 @@ describe('#923 open and reopen', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #923 review — the reopen signal the list screens scroll on
+// ---------------------------------------------------------------------------
+
+describe('#923 reopen signal', () => {
+  /** The reopenCount the paging slot carries after the last write. */
+  function reopenCount(): number {
+    const calls = mockSetThreadListPaging.mock.calls as unknown as [string, unknown][];
+    const last = calls[calls.length - 1][1] as { reopenCount: number } | null;
+    if (last === null) throw new Error('the slot was cleared, not written');
+    return last.reopenCount;
+  }
+
+  async function headPage(options?: { tail?: 'keep' | 'drop' }): Promise<void> {
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'head-1' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'head-cursor-2',
+      }),
+    );
+    await loadThreadsForGroup('group-1', options);
+  }
+
+  async function walkOnce(): Promise<void> {
+    mockGetGroupThreads.mockResolvedValueOnce(
+      listPage({
+        threads: [makeThreadListItem({ threadId: 'tail-1' })],
+        totalCount: 500,
+        hasMore: true,
+        nextCursor: 'cursor-2',
+      }),
+    );
+    await loadMoreThreadsForGroup('group-1');
+  }
+
+  it('moves when a tail: drop refresh trims rows from under the list', async () => {
+    await openWalkedList(['head-1']);
+    await walkOnce();
+    expect(reopenCount()).toBe(0);
+
+    await headPage({ tail: 'drop' });
+
+    expect(reopenCount()).toBe(1);
+  });
+
+  it('does not move on a first open, or on a drop with nothing walked', async () => {
+    await openWalkedList(['head-1']);
+    expect(reopenCount()).toBe(0);
+
+    await headPage({ tail: 'drop' });
+
+    expect(reopenCount()).toBe(0);
+  });
+
+  it('does not move on a refresh that keeps the walked tail', async () => {
+    await openWalkedList(['head-1']);
+    await walkOnce();
+
+    await headPage();
+
+    expect(reopenCount()).toBe(0);
+  });
+
+  it('moves on the INVALID_CURSOR reopen, which trims the same rows', async () => {
+    await openWalkedList(['head-1']);
+    await walkOnce();
+    mockGetGroupThreads.mockRejectedValueOnce(
+      new ValidationError(400, JSON.stringify({ details: { code: 'INVALID_CURSOR' } })),
+    );
+
+    await loadMoreThreadsForGroup('group-1');
+
+    expect(reopenCount()).toBe(1);
+  });
+});
+
 describe('#923 response validation', () => {
   it.each([
     ['threads is not an array', { threads: null as unknown as ThreadListItem[], totalCount: 0, hasMore: false }],

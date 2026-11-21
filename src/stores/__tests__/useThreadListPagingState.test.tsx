@@ -44,6 +44,7 @@ function slot(overrides: Partial<ThreadListPagingState> = {}): ThreadListPagingS
     loadingMore: false,
     loadMoreFailed: false,
     totalCount: 120,
+    reopenCount: 0,
     ...overrides,
   };
 }
@@ -97,6 +98,7 @@ describe('useThreadListPagingState (#923)', () => {
       loadingMore: false,
       loadMoreFailed: false,
       totalCount: 0,
+      reopenCount: 0,
     });
   });
 
@@ -135,6 +137,7 @@ describe('useThreadListPagingState (#923)', () => {
       loadingMore: false,
       loadMoreFailed: false,
       totalCount: 0,
+      reopenCount: 0,
     });
     expect(afterOtherConversation).toBeGreaterThanOrEqual(afterMount);
   });

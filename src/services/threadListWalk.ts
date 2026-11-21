@@ -147,6 +147,11 @@ interface WalkEntry {
    * never be re-issued.
    */
   epoch: number;
+  /**
+   * How many times a reopen has DROPPED a walked tail for this conversation.
+   * Mirrored into the paging slot as the list screen's scroll-to-top signal.
+   */
+  reopenCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +195,7 @@ function makeEntry(): WalkEntry {
     invalidCursorCount: 0,
     totalCount: 0,
     epoch: nextWalkEpoch++,
+    reopenCount: 0,
   };
 }
 
@@ -199,6 +205,7 @@ function toPagingState(entry: WalkEntry): ThreadListPagingState {
     loadingMore: entry.status === 'loading',
     loadMoreFailed: entry.failed,
     totalCount: entry.totalCount,
+    reopenCount: entry.reopenCount,
   };
 }
 
@@ -309,12 +316,19 @@ export function clearWalkInflight(
  *
  * `hasCursor` is the capability probe described in the module docstring, not a
  * position: the walk's own first page is cursorless.
+ *
+ * The reopen counter is CARRIED FORWARD from the entry being replaced. A
+ * `tail: 'drop'` refresh calls {@link reopenWalk} and then lands here, and a
+ * counter that reset would show the screen a bump and then take it back within
+ * the same request — a signal the screen could easily miss between renders.
+ * Only {@link leaveWalk} (the screen is gone) starts it over.
  */
 export function openWalk(
   conversationId: string,
   page: { ids: readonly string[]; hasMore: boolean; hasCursor: boolean; totalCount: number },
 ): void {
   const entry = makeEntry();
+  entry.reopenCount = walks.get(conversationId)?.reopenCount ?? 0;
   entry.headIds = [...page.ids];
   entry.totalCount = page.totalCount;
   entry.status = !page.hasMore ? 'exhausted' : page.hasCursor ? 'idle' : 'unsupported';
@@ -489,11 +503,17 @@ export function noteInvalidCursor(conversationId: string): 'reopen' | 'stop' {
  * A page in flight is SUPERSEDED, not awaited: the epoch moves, so the page
  * lands on nothing, and the single-flight slot is released so the member can
  * walk the reopened list without waiting for a response that will be dropped.
+ *
+ * `reopenCount` moves only when rows were ACTUALLY dropped. A reopen of a
+ * conversation with no walked tail changes nothing on screen, and a screen that
+ * scrolled to the top on it would yank a member who had merely scrolled down a
+ * head page back up on every refresh.
  */
 export function reopenWalk(conversationId: string): readonly string[] | null {
   const entry = walks.get(conversationId);
   if (entry === undefined) return null;
 
+  if (entry.tailIds.size > 0) entry.reopenCount += 1;
   entry.tailIds.clear();
   entry.cursor = null;
   entry.failed = false;

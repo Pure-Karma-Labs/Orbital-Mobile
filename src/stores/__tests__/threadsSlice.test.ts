@@ -891,6 +891,7 @@ describe('threadsSlice — threadListPaging (#923)', () => {
     loadingMore: false,
     loadMoreFailed: false,
     totalCount: 120,
+    reopenCount: 0,
   };
 
   it('starts empty', () => {

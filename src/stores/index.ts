@@ -196,6 +196,11 @@ const EMPTY_THREAD_LIST_PAGING: ThreadListPagingState = Object.freeze({
   loadingMore: false,
   loadMoreFailed: false,
   totalCount: 0,
+  // A conversation with no walk has never reopened one. A screen comparing
+  // this against its own last-seen value therefore sees no change when the
+  // slot disappears (a leave), which is right: a leave is an unmount, not a
+  // scroll-to-top.
+  reopenCount: 0,
 });
 
 export const useThreadListPagingState = (

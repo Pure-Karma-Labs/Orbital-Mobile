@@ -115,6 +115,7 @@ describe('openWalk (#923)', () => {
       loadingMore: false,
       loadMoreFailed: false,
       totalCount: 500,
+      reopenCount: 0,
     });
     expectWalkInvariant();
   });
@@ -555,6 +556,72 @@ describe('reopenWalk (#923)', () => {
 
   it('returns null for a conversation with no walk', () => {
     expect(reopenWalk('conv-unknown')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The reopen signal the list screens scroll on
+// ---------------------------------------------------------------------------
+
+describe('reopenCount (#923 review)', () => {
+  it('moves once per reopen that actually dropped a tail', () => {
+    openWithMore(['head-1']);
+    expect(slot()?.reopenCount).toBe(0);
+
+    walkOnePage(['tail-1'], 'cursor-2', true);
+    expect(slot()?.reopenCount).toBe(0);
+
+    reopenWalk(CONV);
+    expect(slot()?.reopenCount).toBe(1);
+
+    walkOnePage(['tail-2'], 'cursor-3', true);
+    reopenWalk(CONV);
+    expect(slot()?.reopenCount).toBe(2);
+  });
+
+  it('does not move on a reopen with nothing walked', () => {
+    // Every plain open of a conversation takes this path: there is no tail to
+    // drop, so nothing moved under the viewport and the list must stay put.
+    openWithMore(['head-1']);
+
+    reopenWalk(CONV);
+    reopenWalk(CONV);
+
+    expect(slot()?.reopenCount).toBe(0);
+  });
+
+  it('does not move on a refresh that keeps the tail', () => {
+    openWithMore(['head-1']);
+    walkOnePage(['tail-1'], 'cursor-2', true);
+
+    refreshWalk(CONV, { ids: ['head-1', 'head-new'], totalCount: 501 });
+
+    expect(slot()?.reopenCount).toBe(0);
+  });
+
+  it('survives the head page that follows a tail: drop reopen', () => {
+    // The reopen and the openWalk are two halves of ONE refresh. A counter
+    // that reset on the open would bump and un-bump between renders, and the
+    // screen could see neither.
+    openWithMore(['head-1']);
+    walkOnePage(['tail-1'], 'cursor-2', true);
+
+    reopenWalk(CONV);
+    openWithMore(['head-1', 'head-2']);
+
+    expect(slot()?.reopenCount).toBe(1);
+  });
+
+  it('starts over once the screen has left the conversation', () => {
+    openWithMore(['head-1']);
+    walkOnePage(['tail-1'], 'cursor-2', true);
+    reopenWalk(CONV);
+    expect(slot()?.reopenCount).toBe(1);
+
+    leaveWalk(CONV);
+    openWithMore(['head-1']);
+
+    expect(slot()?.reopenCount).toBe(0);
   });
 });
 

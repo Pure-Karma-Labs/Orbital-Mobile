@@ -336,6 +336,23 @@ export interface ThreadListPagingState {
   loadMoreFailed: boolean;
   /** The server's per-viewer total for the conversation, from the last page. */
   totalCount: number;
+  /**
+   * How many times this conversation's walked tail has been DROPPED under the
+   * list (#923 review) — a monotonic counter, not a flag, so a screen can tell
+   * two reopens apart with one `useRef` and no reset handshake.
+   *
+   * It moves on a reopen that actually trimmed rows: a `tail: 'drop'` head
+   * refresh (an own import settling, an unblock) or an `INVALID_CURSOR`. It
+   * does NOT move on a first open, on a plain refresh, or on a reopen of a
+   * conversation that had walked nothing — those change nothing under the
+   * viewport. It starts again at 0 when the walk is forgotten (the screen left
+   * the conversation, or the paging state was wiped).
+   *
+   * What it is FOR: a reopen deletes rows from under a member who was reading
+   * them, leaving the list clamped at the end of the 50-row head page. The
+   * screen scrolls back to offset 0 when this value increases.
+   */
+  reopenCount: number;
 }
 
 export interface ThreadsState {

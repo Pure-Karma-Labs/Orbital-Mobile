@@ -38,6 +38,7 @@ let mockPaging: ThreadListPagingState = {
   loadingMore: false,
   loadMoreFailed: false,
   totalCount: 0,
+  reopenCount: 0,
 };
 
 jest.mock('../../stores', () => ({
@@ -117,7 +118,13 @@ async function endReach(h: Harness): Promise<void> {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockPaging = { hasMore: true, loadingMore: false, loadMoreFailed: false, totalCount: 0 };
+  mockPaging = {
+    hasMore: true,
+    loadingMore: false,
+    loadMoreFailed: false,
+    totalCount: 0,
+    reopenCount: 0,
+  };
   mockLoadMore.mockResolvedValue(result());
 });
 

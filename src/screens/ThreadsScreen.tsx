@@ -290,6 +290,21 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
   }, [isSearching, resultThreadIds]);
 
   /**
+   * A reopen dropped the walked tail out from under this list (#923 review):
+   * an own import settling, an unblock, or an `INVALID_CURSOR`. The member was
+   * reading rows that no longer exist, and is left clamped at the END of the
+   * head page — where this screen's ungated `onEndReached` would re-walk every
+   * page it just dropped. Back to the top, without an animation: the rows that
+   * were under the viewport are gone, so there is no motion to explain.
+   *
+   * Null-safe by design: the empty and search branches do not mount the list,
+   * and a list that mounts later starts at the top anyway.
+   */
+  const handleTailDropped = useCallback((): void => {
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, []);
+
+  /**
    * Load-more (#923). Orbits do NOT gate on a first scroll: `onEndReached`
    * firing on a content-size change is exactly the auto-fill a short orbit
    * list wants, and an orbit is where the imports are.
@@ -301,6 +316,7 @@ export function ThreadsScreen({ navigation }: ThreadsScreenProps): React.JSX.Ele
     renderedCount: threadList.length,
     filtersActive: blockedSet.size > 0,
     disabled: isSearching,
+    onTailDropped: handleTailDropped,
   });
 
   /**

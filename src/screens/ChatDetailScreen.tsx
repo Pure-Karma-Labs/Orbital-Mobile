@@ -236,6 +236,23 @@ export function ChatDetailScreen({
   }, [isSearching, resultThreadIds]);
 
   /**
+   * A reopen dropped this DM's walked tail (#923 review) — an unblock, an own
+   * import settling, or an `INVALID_CURSOR`. The member is left clamped at the
+   * end of a head page whose tail is gone; back to the top, unanimated,
+   * because the rows that were under the viewport no longer exist.
+   *
+   * The hook also re-arms the first-scroll gate on the same signal, so this
+   * list does not walk straight back down the pages it just dropped: a DM
+   * walks when asked (#886), and being put back at the top is not asking.
+   *
+   * Null-safe: the blocked / key / empty / search branches do not mount the
+   * list, and a list mounting later starts at the top.
+   */
+  const handleTailDropped = useCallback((): void => {
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, []);
+
+  /**
    * Load-more (#923), GATED on a real scroll gesture — the difference from
    * ThreadsScreen.
    *
@@ -253,6 +270,7 @@ export function ChatDetailScreen({
     filtersActive: blockedSet.size > 0,
     disabled: isSearching,
     requireFirstScroll: true,
+    onTailDropped: handleTailDropped,
   });
 
   /**

@@ -115,6 +115,24 @@ export interface UseThreadListPagingOptions {
    * above: DMs set this, orbits do not.
    */
   requireFirstScroll?: boolean;
+  /**
+   * A reopen has just DROPPED this conversation's walked tail out from under
+   * the list (#923 review) — an own import settling, an unblock, or an
+   * `INVALID_CURSOR`. The screen's job is one line: put the list back at
+   * offset 0.
+   *
+   * Why it has to: the trim leaves the member clamped at the END of the
+   * ~50-row head page rather than at its top, and an ungated `onEndReached`
+   * there immediately re-walks the pages that were just dropped.
+   *
+   * Called at most once per reopen, only while this conversation is the
+   * mounted one (see the effect below for the switch case), and only for a
+   * reopen that actually trimmed rows — the counter behind it does not move on
+   * a first open or a plain refresh. A screen whose list is unmounted (the
+   * empty or search branches) can let its ref be null: a fresh list mounts at
+   * the top anyway.
+   */
+  onTailDropped?: () => void;
 }
 
 export interface ThreadListPaging {
@@ -144,6 +162,7 @@ export function useThreadListPaging(options: UseThreadListPagingOptions): Thread
     filtersActive = false,
     disabled = false,
     requireFirstScroll = false,
+    onTailDropped,
   } = options;
 
   const paging = useThreadListPagingState(conversationId);
@@ -160,6 +179,10 @@ export function useThreadListPaging(options: UseThreadListPagingOptions): Thread
   filtersActiveRef.current = filtersActive;
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled;
+  // Latest-ref, so the reopen effect below does not re-run (and re-fire the
+  // scroll) merely because the screen handed back a new closure.
+  const onTailDroppedRef = useRef(onTailDropped);
+  onTailDroppedRef.current = onTailDropped;
   const hasMoreRef = useRef(paging.hasMore);
   hasMoreRef.current = paging.hasMore;
 
@@ -202,6 +225,52 @@ export function useThreadListPaging(options: UseThreadListPagingOptions): Thread
     cappedRef.current = true;
     if (mountedRef.current) setCapped(true);
   }, []);
+
+  // The reopen baseline. Both refs move together on every run of the effect
+  // below, so a conversation SWITCH re-baselines instead of reading the new
+  // conversation's count against the old one's.
+  const reopenSeenRef = useRef(paging.reopenCount);
+  const reopenConversationRef = useRef(conversationId);
+
+  /**
+   * A reopen dropped the walked tail out from under this list (#923 review).
+   *
+   * `reopenCount` is monotonic PER CONVERSATION, so only an increase on the
+   * conversation this hook is already mounted with means "rows just vanished
+   * under the viewport". The switch case is explicitly not one: A at 3 → B at
+   * 0 is a smaller number, and B at 4 after A at 3 would otherwise read as a
+   * reopen of a list that was never scrolled. Both are re-baselined silently.
+   */
+  useEffect(() => {
+    const sameConversation = reopenConversationRef.current === conversationId;
+    const previous = reopenSeenRef.current;
+    reopenConversationRef.current = conversationId;
+    reopenSeenRef.current = paging.reopenCount;
+    if (!sameConversation || paging.reopenCount <= previous) return;
+
+    // Re-arm the first-scroll gate (a no-op in an orbit, which never set it).
+    // The DM list has just been put back at its top with a full head page
+    // below it; letting the content-size `onEndReached` through there would
+    // walk straight back down the pages the reopen dropped, which is the whole
+    // defect — and #886's rule is that a DM walks only when asked.
+    scrolledRef.current = false;
+
+    if (renderedCountRef.current === 0) {
+      // Nothing renders, so the list is not even mounted: there is no gesture
+      // left to offer and `onEndReached` can never fire. Keep the footer's
+      // tappable row (the auto-fill's own dead end) rather than clearing the
+      // cap into a blank box.
+      markCapped();
+    } else {
+      // The cap was earned by a tail that no longer exists — a 429, a failure
+      // or five pages that grew nothing, all against a cursor the reopen threw
+      // away. Clearing it lets a scroll walk again instead of demanding a tap.
+      cappedRef.current = false;
+      setCapped(false);
+    }
+
+    onTailDroppedRef.current?.();
+  }, [conversationId, paging.reopenCount, markCapped]);
 
   const runWalk = useCallback(
     async (trigger: WalkTrigger): Promise<void> => {

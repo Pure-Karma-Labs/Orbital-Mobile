@@ -106,6 +106,7 @@ let mockThreadListPaging = {
   loadingMore: false,
   loadMoreFailed: false,
   totalCount: 0,
+  reopenCount: 0,
 };
 
 jest.mock('../../stores', () => {
@@ -286,6 +287,7 @@ beforeEach(() => {
     loadingMore: false,
     loadMoreFailed: false,
     totalCount: 0,
+    reopenCount: 0,
   };
   mockLoadMoreThreadsForGroup.mockResolvedValue({
     status: 'loaded',
@@ -1830,6 +1832,7 @@ describe('ThreadsScreen — load more (#923)', () => {
       loadingMore: false,
       loadMoreFailed: false,
       totalCount: 100,
+      reopenCount: 0,
     };
   });
 
@@ -2044,6 +2047,50 @@ describe('ThreadsScreen — load more (#923)', () => {
       // Entering scrolls; LEAVING must not add one — a walked list's position
       // survives the search overlay (#923).
       expect(scrollSpy.mock.calls.length).toBe(scrollsOnEnter);
+    });
+  });
+
+  describe('a reopen that drops the walked tail', () => {
+    /** The instance `flatListRef` points at, with its scroll stubbed. */
+    function stubScroll(renderer: ReactTestRenderer): jest.Mock {
+      const scrollSpy = jest.fn();
+      const instance = renderer.root
+        .findAll((n) => typeof n.type !== 'string' && typeof n.props.data !== 'undefined')
+        .map((n) => (n as unknown as { instance: { scrollToOffset?: unknown } | null }).instance)
+        .find((i) => i != null && typeof i.scrollToOffset === 'function');
+      expect(instance).toBeDefined();
+      (instance as { scrollToOffset: unknown }).scrollToOffset = scrollSpy;
+      return scrollSpy;
+    }
+
+    it('scrolls the orbit list back to its top', async () => {
+      const renderer = await render();
+      const scrollSpy = stubScroll(renderer);
+
+      // A re-render that is not a reopen moves nothing.
+      await rerender(renderer);
+      expect(scrollSpy).not.toHaveBeenCalled();
+
+      // An own import settling / an unblock / an INVALID_CURSOR: the walk
+      // trimmed its tail out from under a member who was reading it.
+      mockThreadListPaging = { ...mockThreadListPaging, reopenCount: 1 };
+      await rerender(renderer);
+
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+      expect(scrollSpy).toHaveBeenCalledWith({ offset: 0, animated: false });
+    });
+
+    it('does not scroll when the orbit changes under a higher count', async () => {
+      const renderer = await render();
+      const scrollSpy = stubScroll(renderer);
+
+      // group-2's counter is its own: a bigger number here is a different
+      // walk, not rows vanishing under this one.
+      mockActiveConversationId = 'group-2';
+      mockThreadListPaging = { ...mockThreadListPaging, reopenCount: 7 };
+      await rerender(renderer);
+
+      expect(scrollSpy).not.toHaveBeenCalled();
     });
   });
 

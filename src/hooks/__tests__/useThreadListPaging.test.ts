@@ -425,6 +425,112 @@ describe('useThreadListPaging — an empty list that has more', () => {
   });
 });
 
+describe('useThreadListPaging — a reopen that drops the walked tail', () => {
+  /** Stand in for a reopen landing: the walk bumps the slot's counter. */
+  function reopen(h: Harness, count: number): void {
+    setSlot({ reopenCount: count });
+    h.rerender({});
+  }
+
+  it('tells the screen to scroll, once per reopen', () => {
+    const onTailDropped = jest.fn();
+    const h = renderPaging({ onTailDropped });
+    // A first open is not a reopen.
+    expect(onTailDropped).not.toHaveBeenCalled();
+
+    reopen(h, 1);
+    expect(onTailDropped).toHaveBeenCalledTimes(1);
+
+    // A render that changes nothing else must not scroll again.
+    h.rerender({ renderedCount: 41 });
+    expect(onTailDropped).toHaveBeenCalledTimes(1);
+
+    reopen(h, 2);
+    expect(onTailDropped).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not scroll on a mount that already has reopens behind it', () => {
+    setSlot({ reopenCount: 4 });
+    const onTailDropped = jest.fn();
+    const h = renderPaging({ onTailDropped });
+    h.rerender({});
+
+    expect(onTailDropped).not.toHaveBeenCalled();
+  });
+
+  it('does not scroll when the conversation changes under a higher count', () => {
+    const onTailDropped = jest.fn();
+    const h = renderPaging({ onTailDropped });
+    reopen(h, 1);
+    expect(onTailDropped).toHaveBeenCalledTimes(1);
+
+    // The new conversation's slot is a different counter entirely: 5 after 1
+    // is not an increase anyone scrolled through, and 0 after 1 is not a
+    // decrease worth noticing either.
+    setSlot({ reopenCount: 5 });
+    h.rerender({ conversationId: 'group-2' });
+    expect(onTailDropped).toHaveBeenCalledTimes(1);
+
+    // ...and the new conversation's own next reopen still counts.
+    reopen(h, 6);
+    expect(onTailDropped).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-arms the DM first-scroll gate, so the list does not walk straight back down', async () => {
+    const h = renderPaging({ requireFirstScroll: true, renderedCount: 4 });
+    act(() => {
+      h.result.current.onScrollBeginDrag();
+    });
+    await endReach(h);
+    expect(mockLoadMore).toHaveBeenCalledTimes(1);
+
+    reopen(h, 1);
+    // The content-size `onEndReached` that follows the trim must not walk.
+    await endReach(h);
+    expect(mockLoadMore).toHaveBeenCalledTimes(1);
+
+    // A fresh drag is still the way through.
+    act(() => {
+      h.result.current.onScrollBeginDrag();
+    });
+    await endReach(h);
+    expect(mockLoadMore).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears a cap earned by the tail that was just dropped', async () => {
+    mockLoadMore.mockResolvedValue(result({ newIdCount: 0 }));
+    const h = renderPaging();
+    await endReach(h);
+    expect(mockLoadMore).toHaveBeenCalledTimes(MAX_FOLLOW_UP_PAGES);
+    expect(h.result.current.stalled).toBe(true);
+
+    reopen(h, 1);
+    // The cap belonged to a cursor the reopen threw away: no "Load more" row
+    // over a fresh head page, and a scroll walks again without a tap.
+    expect(h.result.current.stalled).toBe(false);
+    expect(h.result.current.footer).toBeNull();
+
+    mockLoadMore.mockResolvedValue(result({ newIdCount: 9 }));
+    await endReach(h);
+    expect(mockLoadMore).toHaveBeenCalledTimes(MAX_FOLLOW_UP_PAGES + 1);
+  });
+
+  it('keeps the tap row when the reopened list renders nothing', async () => {
+    let h!: Harness;
+    await act(async () => {
+      h = renderPaging({ renderedCount: 0, requireFirstScroll: true });
+    });
+    expect(h.result.current.stalled).toBe(true);
+
+    reopen(h, 1);
+    // Nothing renders, so there is no list to scroll and `onEndReached` can
+    // never fire: clearing the cap here would leave a blank box with no way
+    // out of it.
+    expect(h.result.current.stalled).toBe(true);
+    expect(h.result.current.footer?.props).toMatchObject({ loading: false, stalled: true });
+  });
+});
+
 describe('useThreadListPaging — leaving a conversation', () => {
   it('leaves the OLD conversation when the screen switches', () => {
     const h = renderPaging();

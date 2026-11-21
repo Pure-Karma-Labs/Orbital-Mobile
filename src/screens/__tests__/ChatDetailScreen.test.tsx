@@ -153,6 +153,7 @@ let mockThreadListPaging = {
   loadingMore: false,
   loadMoreFailed: false,
   totalCount: 0,
+  reopenCount: 0,
 };
 
 jest.mock('../../stores', () => {
@@ -360,6 +361,7 @@ beforeEach(() => {
     loadingMore: false,
     loadMoreFailed: false,
     totalCount: 0,
+    reopenCount: 0,
   };
   mockLoadMoreThreadsForGroup.mockResolvedValue({
     status: 'loaded',
@@ -1437,6 +1439,7 @@ describe('ChatDetailScreen — load more (#923)', () => {
       loadingMore: false,
       loadMoreFailed: false,
       totalCount: 100,
+      reopenCount: 0,
     };
   });
 
@@ -1742,6 +1745,64 @@ describe('ChatDetailScreen — load more (#923)', () => {
       // Entering scrolls; LEAVING must not add one — a walked list's position
       // survives the search overlay (#923).
       expect(scrollSpy.mock.calls.length).toBe(scrollsOnEnter);
+    });
+  });
+
+  describe('a reopen that drops the walked tail', () => {
+    /** The instance `flatListRef` points at, with its scroll stubbed. */
+    function stubScroll(renderer: ReactTestRenderer): jest.Mock {
+      const scrollSpy = jest.fn();
+      const instance = renderer.root
+        .findAll((n) => typeof n.type !== 'string' && typeof n.props.data !== 'undefined')
+        .map((n) => (n as unknown as { instance: { scrollToOffset?: unknown } | null }).instance)
+        .find((i) => i != null && typeof i.scrollToOffset === 'function');
+      expect(instance).toBeDefined();
+      (instance as { scrollToOffset: unknown }).scrollToOffset = scrollSpy;
+      return scrollSpy;
+    }
+
+    it('scrolls the DM list back to its top, and re-closes the gate', async () => {
+      // A page that adds ids with no filter active IS growth, so one reach is
+      // one request: what this case counts is reaches that got through.
+      mockLoadMoreThreadsForGroup.mockResolvedValue({
+        status: 'loaded',
+        newIdCount: 30,
+        hasMore: true,
+      });
+      const renderer = await render();
+      const scrollSpy = stubScroll(renderer);
+      beginDrag(renderer);
+      await endReach(renderer);
+      expect(mockLoadMoreThreadsForGroup).toHaveBeenCalledTimes(1);
+
+      // A re-render that is not a reopen moves nothing.
+      await rerender(renderer);
+      expect(scrollSpy).not.toHaveBeenCalled();
+
+      mockThreadListPaging = { ...mockThreadListPaging, reopenCount: 1 };
+      await rerender(renderer);
+
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+      expect(scrollSpy).toHaveBeenCalledWith({ offset: 0, animated: false });
+
+      // ...and the content-size `onEndReached` that follows the trim must not
+      // walk the DM straight back down (#886): a fresh drag is the way back.
+      await endReach(renderer);
+      expect(mockLoadMoreThreadsForGroup).toHaveBeenCalledTimes(1);
+      beginDrag(renderer);
+      await endReach(renderer);
+      expect(mockLoadMoreThreadsForGroup).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not scroll when the route re-points at another DM', async () => {
+      const renderer = await render();
+      const scrollSpy = stubScroll(renderer);
+
+      // dm-conv-2's counter is its own walk's, not this list's.
+      mockThreadListPaging = { ...mockThreadListPaging, reopenCount: 7 };
+      await rerender(renderer, 'dm-conv-2');
+
+      expect(scrollSpy).not.toHaveBeenCalled();
     });
   });
 
